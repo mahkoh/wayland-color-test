@@ -1,0 +1,29 @@
+[package]
+name = "wayland-color-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.31.1"
+egui-winit = { version = "0.31.1", features = ["wayland"] }
+egui-wgpu = { version =  "0.31.1", features = ["winit"] }
+pollster = "0.4.0"
+wl-client = "0.1.1"
+raw-window-handle = "0.6.2"
+async-io = "2.4.0"
+futures-util = "0.3.31"
+ash = { version = "0.38.0", features = ["linked"] }
+thiserror = "2.0.12"
+run-on-drop = "1.0.0"
+itertools = "0.14.0"
+bytemuck = "1.22.0"
+linearize = { version = "0.1.4", features = ["derive"] }
+debug-fn = "1.0.0"
+gpu-alloc = "0.6.0"
+gpu-alloc-ash = "0.7.0"
+isnt = "0.1.0"
+
+[build-dependencies]
+wl-client-builder = "0.1.0"
+anyhow = "1.0.98"
+shaderc = "0.9.1"
