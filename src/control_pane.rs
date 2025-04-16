@@ -433,13 +433,13 @@ impl Default for ControlPaneConfig {
                     lumen: default_lumen,
                     lightness: default_lightness,
                     chroma: default_chroma,
-                    hue: 180.0,
+                    hue: 270.0,
                 },
                 Color {
                     lumen: default_lumen,
                     lightness: default_lightness,
                     chroma: default_chroma,
-                    hue: 270.0,
+                    hue: 180.0,
                 },
             ],
             center_box: [
