@@ -1,15 +1,15 @@
 use {
     crate::{
-        cmm::{Luminance, NamedPrimaries, TransferFunction},
+        cmm::{Luminance, NamedPrimaries, Primaries, TransferFunction},
         protocols::{
             color_management_v1::wp_color_manager_v1::WpColorManagerV1Feature,
             wayland::{wl_callback::WlCallback, wl_surface::WlSurface},
         },
-        test_pane::{Color, TestColorDescription, TestPane, TestScene},
+        test_pane::{Color, TestColorDescription, TestPane, TestPrimaries, TestScene},
     },
     egui::{
-        CentralPanel, ComboBox, Context, FullOutput, Grid, RawInput, Slider, Ui, ViewportBuilder,
-        ViewportInfo, Widget, WidgetText,
+        CentralPanel, ComboBox, Context, DragValue, FullOutput, Grid, RawInput, Slider, Ui,
+        ViewportBuilder, ViewportInfo, Widget, WidgetText,
     },
     egui_wgpu::{
         wgpu::{Backends, InstanceDescriptor, PresentMode},
@@ -134,7 +134,10 @@ impl ControlPane {
                 ColorDescriptionType::None => TestColorDescription::None,
                 ColorDescriptionType::ScRgb => TestColorDescription::ScRgb,
                 ColorDescriptionType::Parametric => TestColorDescription::Parametric {
-                    primaries: self.config.primaries,
+                    primaries: match self.config.use_custom_primaries {
+                        true => TestPrimaries::Custom(self.config.primaries),
+                        false => TestPrimaries::Named(self.config.named_primaries),
+                    },
                     transfer_function: self.config.tf,
                     luminance: self
                         .config
@@ -340,10 +343,12 @@ struct ControlPaneConfig {
 
     // color description
     cd_type: ColorDescriptionType,
-    primaries: NamedPrimaries,
+    named_primaries: NamedPrimaries,
+    use_custom_primaries: bool,
     tf: TransferFunction,
     enable_luminance: bool,
     luminance: Luminance,
+    primaries: Primaries,
 
     // scene
     scene: SelectedScene,
@@ -377,10 +382,12 @@ impl Default for ControlPaneConfig {
             max_lumen: 1000.0,
             max_chroma: 0.5,
             cd_type: ColorDescriptionType::None,
-            primaries: NamedPrimaries::Srgb,
+            named_primaries: NamedPrimaries::Srgb,
+            use_custom_primaries: false,
             tf: TransferFunction::Srgb,
             enable_luminance: false,
             luminance: Default::default(),
+            primaries: Primaries::SRGB,
             scene: Default::default(),
             fill: Color {
                 lumen: default_lumen,
@@ -537,15 +544,38 @@ fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, config: &mut Contro
         });
     ui.add_space(20.0);
     if config.cd_type == ColorDescriptionType::Parametric {
-        ComboBox::from_label("Primaries")
-            .selected_text(config.primaries)
-            .show_ui(ui, |ui| {
-                for primary in NamedPrimaries::variants() {
-                    if test_pane.primaries.contains(&primary.wayland()) {
-                        ui.selectable_value(&mut config.primaries, primary, primary);
-                    }
+        if test_pane
+            .features
+            .contains(&WpColorManagerV1Feature::SET_PRIMARIES)
+        {
+            ui.checkbox(&mut config.use_custom_primaries, "Custom primaries");
+        }
+        if config.use_custom_primaries {
+            Grid::new("custom primaries").show(ui, |ui| {
+                for (name, cp) in [
+                    ("r", &mut config.primaries.r),
+                    ("g", &mut config.primaries.g),
+                    ("b", &mut config.primaries.b),
+                    ("wp", &mut config.primaries.wp),
+                ] {
+                    let (x, y) = cp;
+                    ui.label(name);
+                    DragValue::new(&mut x.0).speed(0.01).ui(ui);
+                    DragValue::new(&mut y.0).speed(0.01).ui(ui);
+                    ui.end_row();
                 }
             });
+        } else {
+            ComboBox::from_label("Named primaries")
+                .selected_text(config.named_primaries)
+                .show_ui(ui, |ui| {
+                    for primary in NamedPrimaries::variants() {
+                        if test_pane.primaries.contains(&primary.wayland()) {
+                            ui.selectable_value(&mut config.named_primaries, primary, primary);
+                        }
+                    }
+                });
+        }
         ComboBox::from_label("Transfer function")
             .selected_text(config.tf)
             .show_ui(ui, |ui| {

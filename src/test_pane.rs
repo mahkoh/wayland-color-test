@@ -4,6 +4,7 @@ use {
             matrix_from_lms, ColorMatrix, Lms, Local, Luminance, NamedPrimaries, Primaries,
             TransferFunction,
         },
+        ordered_float::F64,
         protocols::{
             color_management_v1::{
                 wp_color_management_surface_v1::WpColorManagementSurfaceV1,
@@ -80,11 +81,17 @@ struct Mutable {
 }
 
 #[derive(Copy, Clone, PartialEq)]
+pub enum TestPrimaries {
+    Named(NamedPrimaries),
+    Custom(Primaries),
+}
+
+#[derive(Copy, Clone, PartialEq)]
 pub enum TestColorDescription {
     None,
     ScRgb,
     Parametric {
-        primaries: NamedPrimaries,
+        primaries: TestPrimaries,
         transfer_function: TransferFunction,
         luminance: Option<Luminance>,
     },
@@ -259,10 +266,29 @@ impl TestPane {
                                 lum.max = l.max;
                             }
                         }
-                        m.matrix = matrix_from_lms(primaries.primaries(), lum);
+                        let primaries = match primaries {
+                            TestPrimaries::Named(n) => n.primaries(),
+                            TestPrimaries::Custom(c) => c,
+                        };
+                        m.matrix = matrix_from_lms(primaries, lum);
                     }
                     let c = self.state.wp_color_manager_v1.create_parametric_creator();
-                    c.set_primaries_named(primaries.wayland());
+                    match primaries {
+                        TestPrimaries::Named(n) => c.set_primaries_named(n.wayland()),
+                        TestPrimaries::Custom(p) => {
+                            let map = |p: F64| (p.0 * 1_000_000.0) as i32;
+                            c.set_primaries(
+                                map(p.r.0),
+                                map(p.r.1),
+                                map(p.g.0),
+                                map(p.g.1),
+                                map(p.b.0),
+                                map(p.b.1),
+                                map(p.wp.0),
+                                map(p.wp.1),
+                            );
+                        }
+                    }
                     c.set_tf_named(transfer_function.wayland());
                     if let Some(l) = luminance {
                         c.set_luminances(
