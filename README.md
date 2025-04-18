@@ -9,4 +9,6 @@ Prerequisites:
 - The vulkan driver must support R16G16B16A16_SFLOAT with the PASS_THROUGH_EXT
   color space. (Mesa 25.1)
 
-![screenshot.png](screenshot.png)
+![four-corners.png](screenshots/four-corners.png)
+![feedback.png](screenshots/feedback.png)
+![color-description.png](screenshots/color-description.png)

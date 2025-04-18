@@ -44,8 +44,16 @@ async fn async_main() {
         event_loop.pump_app_events(Some(Duration::ZERO), &mut app);
         app.test_pane.dispatch();
         let control_pane = app.control_pane.as_mut().unwrap();
-        if let Some(error_message) = app.test_pane.description_error_message() {
-            control_pane.draw_state.error_message = error_message;
+        if let Some(error_message) = app.test_pane.create_description_error_message() {
+            control_pane.draw_state.create_description_error_message = error_message;
+            control_pane.need_repaint = true;
+        }
+        if let Some(error_message) = app.test_pane.preferred_description_error_message() {
+            control_pane.draw_state.preferred_description_error_message = error_message;
+            control_pane.need_repaint = true;
+        }
+        if let Some(data) = app.test_pane.preferred_description_data() {
+            control_pane.draw_state.preferred_description_data = Some(data);
             control_pane.need_repaint = true;
         }
         if control_pane.need_repaint {

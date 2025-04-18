@@ -6,7 +6,9 @@ use {
             color_management_v1::wp_color_manager_v1::WpColorManagerV1Feature,
             wayland::{wl_callback::WlCallback, wl_surface::WlSurface},
         },
-        test_pane::{Color, TestColorDescription, TestPane, TestPrimaries, TestScene},
+        test_pane::{
+            Color, DescriptionData, TestColorDescription, TestPane, TestPrimaries, TestScene,
+        },
     },
     bytemuck::{bytes_of, NoUninit},
     egui::{
@@ -67,7 +69,9 @@ pub struct DrawState {
     cie_diagram: Option<CieDiagram>,
     horseshoe_pipeline: RenderPipeline,
     triangle_pipeline: RenderPipeline,
-    pub error_message: Option<String>,
+    pub create_description_error_message: Option<String>,
+    pub preferred_description_error_message: Option<String>,
+    pub preferred_description_data: Option<DescriptionData>,
 }
 
 struct CieDiagram {
@@ -268,6 +272,7 @@ enum View {
     #[default]
     Scenes,
     ColorDescription,
+    Feedback,
     Settings,
 }
 
@@ -297,6 +302,7 @@ impl From<View> for WidgetText {
             View::Settings => "settings",
             View::ColorDescription => "color description",
             View::Scenes => "scenes",
+            View::Feedback => "feedback",
         };
         txt.into()
     }
@@ -544,6 +550,7 @@ fn draw_egui(ctx: &Context, test_pane: &TestPane, ds: &mut DrawState) {
             View::Scenes => draw_scenes(ui, ds),
             View::Settings => draw_settings(ui, ds),
             View::ColorDescription => draw_color_description(ui, test_pane, ds),
+            View::Feedback => draw_feedback(ui, ds),
         }
     });
 }
@@ -555,7 +562,7 @@ fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, ds: &mut DrawState)
         ui.vertical(|ui| {
             ui.set_width(270.0);
             draw_color_description_settings(ui, test_pane, ds);
-            if let Some(err) = &ds.error_message {
+            if let Some(err) = &ds.create_description_error_message {
                 ui.add_space(20.0);
                 ui.colored_label(Color32::from_rgb(255, 128, 128), err);
             }
@@ -673,6 +680,72 @@ fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut D
             }
         }
     }
+}
+
+fn draw_feedback(ui: &mut Ui, ds: &mut DrawState) {
+    if let Some(err) = &ds.preferred_description_error_message {
+        ui.colored_label(Color32::from_rgb(255, 128, 128), err);
+        return;
+    }
+    let Some(data) = ds.preferred_description_data else {
+        return;
+    };
+    let primaries = match data.primaries {
+        TestPrimaries::Named(p) => p.primaries(),
+        TestPrimaries::Custom(p) => p,
+    };
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(270.0);
+            ui.horizontal_top(|ui| {
+                ui.label("Primaries:");
+                if let TestPrimaries::Named(p) = data.primaries {
+                    ui.label(p);
+                };
+            });
+            ui.indent("primaries", |ui| {
+                Grid::new("primaries").show(ui, |ui| {
+                    for (name, cp) in [
+                        ("r", primaries.r),
+                        ("g", primaries.g),
+                        ("b", primaries.b),
+                        ("wp", primaries.wp),
+                    ] {
+                        let (x, y) = cp;
+                        ui.label(name);
+                        ui.label(x.0.to_string());
+                        ui.label(y.0.to_string());
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            ui.horizontal_top(|ui| {
+                ui.label("Transfer function:");
+                ui.label(data.tf);
+            });
+            ui.add_space(10.0);
+            if let Some(lum) = data.luminance {
+                ui.label("Luminance:");
+                ui.indent("luminance", |ui| {
+                    Grid::new("luminance").show(ui, |ui| {
+                        ui.label("Min");
+                        ui.label(lum.min.to_string());
+                        ui.end_row();
+                        ui.label("Max");
+                        ui.label(lum.max.to_string());
+                        ui.end_row();
+                        ui.label("White");
+                        ui.label(lum.white.to_string());
+                        ui.end_row();
+                    });
+                });
+            }
+        });
+        ui.vertical(|ui| {
+            draw_chromaticity_diagram(ui, ds, primaries);
+        });
+    });
 }
 
 fn draw_settings(ui: &mut Ui, ds: &mut DrawState) {
@@ -1035,6 +1108,8 @@ fn init_wgpu(painter: &Painter) -> DrawState {
         cie_diagram: None,
         horseshoe_pipeline,
         triangle_pipeline,
-        error_message: None,
+        create_description_error_message: None,
+        preferred_description_error_message: None,
+        preferred_description_data: None,
     }
 }
