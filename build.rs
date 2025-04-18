@@ -9,7 +9,7 @@ use {
     },
 };
 
-const ROOT: &str = "src/shaders";
+const ROOT: &str = "src/vulkan_shaders";
 
 fn main() -> anyhow::Result<()> {
     wl_client_builder::Builder::default().build()?;

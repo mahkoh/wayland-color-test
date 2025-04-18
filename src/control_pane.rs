@@ -1,20 +1,30 @@
 use {
     crate::{
         cmm::{Luminance, NamedPrimaries, Primaries, TransferFunction},
+        ordered_float::F64,
         protocols::{
             color_management_v1::wp_color_manager_v1::WpColorManagerV1Feature,
             wayland::{wl_callback::WlCallback, wl_surface::WlSurface},
         },
         test_pane::{Color, TestColorDescription, TestPane, TestPrimaries, TestScene},
     },
+    bytemuck::{bytes_of, NoUninit},
     egui::{
-        CentralPanel, ComboBox, Context, DragValue, FullOutput, Grid, RawInput, Slider, Ui,
-        ViewportBuilder, ViewportInfo, Widget, WidgetText,
+        vec2, CentralPanel, Color32, ComboBox, Context, DragValue, FullOutput, Grid, Image,
+        RawInput, Slider, TextureId, Ui, ViewportBuilder, ViewportInfo, Widget, WidgetText,
     },
     egui_wgpu::{
-        wgpu::{Backends, InstanceDescriptor, PresentMode},
+        wgpu::{
+            Backends, BlendComponent, BlendState, ColorTargetState, DeviceDescriptor, Extent3d,
+            Features, FilterMode, FragmentState, IndexFormat, InstanceDescriptor, Limits, LoadOp,
+            Operations, PipelineLayoutDescriptor, PresentMode, PrimitiveState, PrimitiveTopology,
+            PushConstantRange, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
+            RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp,
+            TexelCopyTextureInfo, Texture, TextureDescriptor, TextureDimension, TextureFormat,
+            TextureUsages, TextureView, TextureViewDescriptor, VertexState,
+        },
         winit::Painter,
-        WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew,
+        RenderState, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew,
     },
     egui_winit::winit::{
         event::WindowEvent,
@@ -46,8 +56,27 @@ pub struct ControlPane {
     pub need_repaint: bool,
     have_frame: Rc<Cell<bool>>,
     output: FullOutput,
-    config: ControlPaneConfig,
+    pub draw_state: DrawState,
     pub repaint_after: Option<Instant>,
+}
+
+pub struct DrawState {
+    renderer: RenderState,
+    max_size: u32,
+    config: ControlPaneConfig,
+    cie_diagram: Option<CieDiagram>,
+    horseshoe_pipeline: RenderPipeline,
+    triangle_pipeline: RenderPipeline,
+    pub error_message: Option<String>,
+}
+
+struct CieDiagram {
+    horseshoe_tex: Texture,
+    _horseshoe_view: TextureView,
+    tex: Texture,
+    view: TextureView,
+    id: TextureId,
+    size: u32,
 }
 
 impl ControlPane {
@@ -76,6 +105,14 @@ impl ControlPane {
                     backends: Backends::VULKAN,
                     ..Default::default()
                 },
+                device_descriptor: Arc::new(|_| DeviceDescriptor {
+                    required_features: Features::PUSH_CONSTANTS,
+                    required_limits: Limits {
+                        max_push_constant_size: 128,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -99,11 +136,11 @@ impl ControlPane {
             wl_surface,
             window,
             state,
+            draw_state: init_wgpu(&painter),
             painter,
             need_repaint: true,
             have_frame: Rc::new(Cell::new(true)),
             output: Default::default(),
-            config: Default::default(),
             repaint_after: None,
         };
         slf.run(test_pane, raw_input);
@@ -112,37 +149,31 @@ impl ControlPane {
 
     fn run(&mut self, test_pane: &TestPane, raw_input: RawInput) {
         let new_output = self.ctx.run(raw_input, |ctx| {
-            draw_egui(ctx, test_pane, &mut self.config);
-            let scene = match self.config.scene {
-                SelectedScene::Fill => TestScene::Fill(self.config.fill),
-                SelectedScene::FillLeftRight => TestScene::FillLeftRight(self.config.left_right),
-                SelectedScene::FillTopBottom => TestScene::FillTopBottom(self.config.top_bottom),
-                SelectedScene::FillFour => TestScene::FillFour(self.config.four_corners),
+            draw_egui(ctx, test_pane, &mut self.draw_state);
+            let config = &self.draw_state.config;
+            let scene = match config.scene {
+                SelectedScene::Fill => TestScene::Fill(config.fill),
+                SelectedScene::FillLeftRight => TestScene::FillLeftRight(config.left_right),
+                SelectedScene::FillTopBottom => TestScene::FillTopBottom(config.top_bottom),
+                SelectedScene::FillFour => TestScene::FillFour(config.four_corners),
                 SelectedScene::CenterBox => {
-                    TestScene::CenterBox(self.config.center_box, self.config.center_box_size)
+                    TestScene::CenterBox(config.center_box, config.center_box_size)
                 }
-                SelectedScene::Grid => TestScene::Grid(
-                    self.config.grid,
-                    self.config.grid_rows,
-                    self.config.grid_cols,
-                ),
-                SelectedScene::Blend => {
-                    TestScene::Blend(self.config.blend, self.config.blend_alpha)
+                SelectedScene::Grid => {
+                    TestScene::Grid(config.grid, config.grid_rows, config.grid_cols)
                 }
+                SelectedScene::Blend => TestScene::Blend(config.blend, config.blend_alpha),
             };
-            let desc = match self.config.cd_type {
+            let desc = match config.cd_type {
                 ColorDescriptionType::None => TestColorDescription::None,
                 ColorDescriptionType::ScRgb => TestColorDescription::ScRgb,
                 ColorDescriptionType::Parametric => TestColorDescription::Parametric {
-                    primaries: match self.config.use_custom_primaries {
-                        true => TestPrimaries::Custom(self.config.primaries),
-                        false => TestPrimaries::Named(self.config.named_primaries),
+                    primaries: match config.use_custom_primaries {
+                        true => TestPrimaries::Custom(config.primaries),
+                        false => TestPrimaries::Named(config.named_primaries),
                     },
-                    transfer_function: self.config.tf,
-                    luminance: self
-                        .config
-                        .enable_luminance
-                        .then_some(self.config.luminance),
+                    transfer_function: config.tf,
+                    luminance: config.enable_luminance.then_some(config.luminance),
                 },
             };
             test_pane.apply_config(desc, scene);
@@ -388,7 +419,7 @@ impl Default for ControlPaneConfig {
             enable_luminance: false,
             luminance: Default::default(),
             primaries: Primaries::SRGB,
-            scene: Default::default(),
+            scene: SelectedScene::FillFour,
             fill: Color {
                 lumen: default_lumen,
                 lightness: 1.0,
@@ -499,27 +530,52 @@ impl Default for ControlPaneConfig {
     }
 }
 
-fn draw_egui(ctx: &Context, test_pane: &TestPane, config: &mut ControlPaneConfig) {
+fn draw_egui(ctx: &Context, test_pane: &TestPane, ds: &mut DrawState) {
     CentralPanel::default().show(ctx, |ui| {
         ComboBox::from_label("View")
-            .selected_text(config.view)
+            .selected_text(ds.config.view)
             .show_ui(ui, |ui| {
                 for s in View::variants() {
-                    ui.selectable_value(&mut config.view, s, s);
+                    ui.selectable_value(&mut ds.config.view, s, s);
                 }
             });
         ui.add_space(10.0);
-        match config.view {
-            View::Scenes => draw_scenes(ui, config),
-            View::Settings => draw_settings(ui, config),
-            View::ColorDescription => draw_color_description(ui, test_pane, config),
+        match ds.config.view {
+            View::Scenes => draw_scenes(ui, ds),
+            View::Settings => draw_settings(ui, ds),
+            View::ColorDescription => draw_color_description(ui, test_pane, ds),
         }
     });
 }
 
-fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, config: &mut ControlPaneConfig) {
+fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, ds: &mut DrawState) {
     ui.label("Changing these settings should not affect the output.");
     ui.add_space(20.0);
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(270.0);
+            draw_color_description_settings(ui, test_pane, ds);
+            if let Some(err) = &ds.error_message {
+                ui.add_space(20.0);
+                ui.colored_label(Color32::from_rgb(255, 128, 128), err);
+            }
+        });
+        ui.vertical(|ui| {
+            let primaries = match ds.config.cd_type {
+                ColorDescriptionType::None => Primaries::SRGB,
+                ColorDescriptionType::ScRgb => Primaries::SRGB,
+                ColorDescriptionType::Parametric => match ds.config.use_custom_primaries {
+                    true => ds.config.primaries,
+                    false => ds.config.named_primaries.primaries(),
+                },
+            };
+            draw_chromaticity_diagram(ui, ds, primaries);
+        });
+    });
+}
+
+fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut DrawState) {
+    let config = &mut ds.config;
     ComboBox::from_label("Type")
         .selected_text(config.cd_type)
         .show_ui(ui, |ui| {
@@ -543,6 +599,7 @@ fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, config: &mut Contro
             }
         });
     ui.add_space(20.0);
+    let mut primaries;
     if config.cd_type == ColorDescriptionType::Parametric {
         if test_pane
             .features
@@ -550,22 +607,7 @@ fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, config: &mut Contro
         {
             ui.checkbox(&mut config.use_custom_primaries, "Custom primaries");
         }
-        if config.use_custom_primaries {
-            Grid::new("custom primaries").show(ui, |ui| {
-                for (name, cp) in [
-                    ("r", &mut config.primaries.r),
-                    ("g", &mut config.primaries.g),
-                    ("b", &mut config.primaries.b),
-                    ("wp", &mut config.primaries.wp),
-                ] {
-                    let (x, y) = cp;
-                    ui.label(name);
-                    DragValue::new(&mut x.0).speed(0.01).ui(ui);
-                    DragValue::new(&mut y.0).speed(0.01).ui(ui);
-                    ui.end_row();
-                }
-            });
-        } else {
+        ui.add_enabled_ui(!config.use_custom_primaries, |ui| {
             ComboBox::from_label("Named primaries")
                 .selected_text(config.named_primaries)
                 .show_ui(ui, |ui| {
@@ -575,6 +617,30 @@ fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, config: &mut Contro
                         }
                     }
                 });
+        });
+        if config.use_custom_primaries {
+            primaries = config.primaries;
+        } else {
+            primaries = config.named_primaries.primaries();
+        }
+        ui.add_enabled_ui(config.use_custom_primaries, |ui| {
+            Grid::new("custom primaries").show(ui, |ui| {
+                for (name, cp) in [
+                    ("r", &mut primaries.r),
+                    ("g", &mut primaries.g),
+                    ("b", &mut primaries.b),
+                    ("wp", &mut primaries.wp),
+                ] {
+                    let (x, y) = cp;
+                    ui.label(name);
+                    DragValue::new(&mut x.0).speed(0.001).ui(ui);
+                    DragValue::new(&mut y.0).speed(0.001).ui(ui);
+                    ui.end_row();
+                }
+            });
+        });
+        if config.use_custom_primaries {
+            config.primaries = primaries;
         }
         ComboBox::from_label("Transfer function")
             .selected_text(config.tf)
@@ -591,27 +657,26 @@ fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, config: &mut Contro
         {
             ui.checkbox(&mut config.enable_luminance, "Luminance");
             if config.enable_luminance {
-                ui.horizontal_top(|ui| {
-                    Slider::new(&mut config.luminance.min.0, 0.0..=100.0)
-                        .prefix("Min: ")
-                        .drag_value_speed(1.0)
-                        .ui(ui);
-                    let min = config.luminance.min.0 + 1.0;
-                    Slider::new(&mut config.luminance.max.0, min..=10000.0)
-                        .prefix("Max: ")
-                        .drag_value_speed(1.0)
-                        .ui(ui);
-                    Slider::new(&mut config.luminance.white.0, min..=config.luminance.max.0)
-                        .prefix("White: ")
-                        .drag_value_speed(1.0)
-                        .ui(ui);
-                });
+                Slider::new(&mut config.luminance.min.0, 0.0..=100.0)
+                    .prefix("Min: ")
+                    .drag_value_speed(1.0)
+                    .ui(ui);
+                let min = config.luminance.min.0 + 1.0;
+                Slider::new(&mut config.luminance.max.0, min..=10000.0)
+                    .prefix("Max: ")
+                    .drag_value_speed(1.0)
+                    .ui(ui);
+                Slider::new(&mut config.luminance.white.0, min..=config.luminance.max.0)
+                    .prefix("White: ")
+                    .drag_value_speed(1.0)
+                    .ui(ui);
             }
         }
     }
 }
 
-fn draw_settings(ui: &mut Ui, config: &mut ControlPaneConfig) {
+fn draw_settings(ui: &mut Ui, ds: &mut DrawState) {
+    let config = &mut ds.config;
     Slider::new(&mut config.max_lumen, 0.0..=10000.0)
         .prefix("Max lumen: ")
         .drag_value_speed(10.0)
@@ -622,7 +687,8 @@ fn draw_settings(ui: &mut Ui, config: &mut ControlPaneConfig) {
         .ui(ui);
 }
 
-fn draw_scenes(ui: &mut Ui, config: &mut ControlPaneConfig) {
+fn draw_scenes(ui: &mut Ui, ds: &mut DrawState) {
+    let config = &mut ds.config;
     ComboBox::from_label("Scene")
         .selected_text(config.scene)
         .show_ui(ui, |ui| {
@@ -730,5 +796,245 @@ fn draw_scenes(ui: &mut Ui, config: &mut ControlPaneConfig) {
                 .ui(ui);
             colors(ui, &mut [("background: ", bg), ("foreground: ", fg)]);
         }
+    }
+}
+
+fn draw_chromaticity_diagram(ui: &mut Ui, ds: &mut DrawState, primaries: Primaries) {
+    let available = ui.available_size();
+    let available = available.x.min(available.y).round();
+    let size = (ui.pixels_per_point() * available).round() as u32;
+    let size = size.min(ds.max_size);
+    if let Some(cie) = &mut ds.cie_diagram {
+        if cie.size != size {
+            ds.renderer.renderer.write().free_texture(&cie.id);
+            ds.cie_diagram = None;
+        }
+    }
+    let cie = match &mut ds.cie_diagram {
+        Some(c) => c,
+        _ => {
+            let horseshoe_tex = ds.renderer.device.create_texture(&TextureDescriptor {
+                label: None,
+                size: Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+                view_formats: &[TextureFormat::Rgba8Unorm],
+            });
+            let horseshoe_view = horseshoe_tex.create_view(&TextureViewDescriptor {
+                ..Default::default()
+            });
+            let mut encoder = ds
+                .renderer
+                .device
+                .create_command_encoder(&Default::default());
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &horseshoe_view,
+                    resolve_target: None,
+                    ops: Default::default(),
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&ds.horseshoe_pipeline);
+            pass.draw(0..4, 0..1);
+            drop(pass);
+            ds.renderer.queue.submit([encoder.finish()]);
+            let tex = ds.renderer.device.create_texture(&TextureDescriptor {
+                label: None,
+                size: Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8UnormSrgb,
+                usage: TextureUsages::RENDER_ATTACHMENT
+                    | TextureUsages::TEXTURE_BINDING
+                    | TextureUsages::COPY_DST,
+                view_formats: &[TextureFormat::Rgba8UnormSrgb],
+            });
+            let view = tex.create_view(&TextureViewDescriptor {
+                ..Default::default()
+            });
+            let tex_id = ds.renderer.renderer.write().register_native_texture(
+                &ds.renderer.device,
+                &view,
+                FilterMode::Linear,
+            );
+            ds.cie_diagram.insert(CieDiagram {
+                horseshoe_tex,
+                _horseshoe_view: horseshoe_view,
+                tex,
+                view,
+                id: tex_id,
+                size,
+            })
+        }
+    };
+    let mut encoder = ds
+        .renderer
+        .device
+        .create_command_encoder(&Default::default());
+    encoder.copy_texture_to_texture(
+        TexelCopyTextureInfo {
+            texture: &cie.horseshoe_tex,
+            mip_level: 0,
+            origin: Default::default(),
+            aspect: Default::default(),
+        },
+        TexelCopyTextureInfo {
+            texture: &cie.tex,
+            mip_level: 0,
+            origin: Default::default(),
+            aspect: Default::default(),
+        },
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+    );
+    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+        color_attachments: &[Some(RenderPassColorAttachment {
+            view: &cie.view,
+            resolve_target: None,
+            ops: Operations {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
+    pass.set_pipeline(&ds.triangle_pipeline);
+    #[derive(NoUninit, Copy, Clone)]
+    #[repr(C)]
+    struct Data {
+        r: [f32; 2],
+        g: [f32; 2],
+        b: [f32; 2],
+        wp: [f32; 2],
+    }
+    let map = |f: (F64, F64)| [f.0 .0 as f32, f.1 .0 as f32];
+    let data = Data {
+        r: map(primaries.r),
+        g: map(primaries.g),
+        b: map(primaries.b),
+        wp: map(primaries.wp),
+    };
+    pass.set_push_constants(ShaderStages::FRAGMENT, 0, bytes_of(&data));
+    pass.draw(0..4, 0..1);
+    drop(pass);
+    ds.renderer.queue.submit([encoder.finish()]);
+    let image = Image::from_texture((cie.id, vec2(available as _, available as _)));
+    image.ui(ui);
+}
+
+fn init_wgpu(painter: &Painter) -> DrawState {
+    let renderer = painter.render_state().unwrap();
+    let horseshoe_module = renderer
+        .device
+        .create_shader_module(ShaderModuleDescriptor {
+            label: None,
+            source: ShaderSource::Wgsl(include_str!("wgpu_shaders/horseshoe.wgsl").into()),
+        });
+    let horseshoe_pipeline = renderer
+        .device
+        .create_render_pipeline(&RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: VertexState {
+                module: &horseshoe_module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleStrip,
+                strip_index_format: Some(IndexFormat::Uint32),
+                ..Default::default()
+            },
+            fragment: Some(FragmentState {
+                module: &horseshoe_module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: Default::default(),
+                })],
+            }),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+    let triangle_module = renderer
+        .device
+        .create_shader_module(ShaderModuleDescriptor {
+            label: None,
+            source: ShaderSource::Wgsl(include_str!("wgpu_shaders/triangle.wgsl").into()),
+        });
+    let triangle_pipeline = renderer
+        .device
+        .create_render_pipeline(&RenderPipelineDescriptor {
+            label: None,
+            layout: Some(
+                &renderer
+                    .device
+                    .create_pipeline_layout(&PipelineLayoutDescriptor {
+                        push_constant_ranges: &[PushConstantRange {
+                            stages: ShaderStages::FRAGMENT,
+                            range: 0..32,
+                        }],
+                        ..Default::default()
+                    }),
+            ),
+            vertex: VertexState {
+                module: &triangle_module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleStrip,
+                strip_index_format: Some(IndexFormat::Uint32),
+                ..Default::default()
+            },
+            fragment: Some(FragmentState {
+                module: &triangle_module,
+                entry_point: None,
+                compilation_options: Default::default(),
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(BlendState {
+                        color: BlendComponent::OVER,
+                        alpha: BlendComponent::OVER,
+                    }),
+                    write_mask: Default::default(),
+                })],
+            }),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+    let limits = renderer.device.limits();
+    DrawState {
+        renderer,
+        max_size: limits.max_texture_dimension_2d,
+        config: Default::default(),
+        cie_diagram: None,
+        horseshoe_pipeline,
+        triangle_pipeline,
+        error_message: None,
     }
 }
