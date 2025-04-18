@@ -7,11 +7,20 @@ use {
         ordered_float::F64,
         protocols::{
             color_management_v1::{
+                wp_color_management_surface_feedback_v1::{
+                    WpColorManagementSurfaceFeedbackV1,
+                    WpColorManagementSurfaceFeedbackV1EventHandler,
+                    WpColorManagementSurfaceFeedbackV1Ref,
+                },
                 wp_color_management_surface_v1::WpColorManagementSurfaceV1,
                 wp_color_manager_v1::{
                     WpColorManagerV1, WpColorManagerV1EventHandler, WpColorManagerV1Feature,
                     WpColorManagerV1Primaries, WpColorManagerV1Ref, WpColorManagerV1RenderIntent,
                     WpColorManagerV1TransferFunction,
+                },
+                wp_image_description_info_v1::{
+                    WpImageDescriptionInfoV1, WpImageDescriptionInfoV1EventHandler,
+                    WpImageDescriptionInfoV1Ref,
                 },
                 wp_image_description_v1::{
                     WpImageDescriptionV1, WpImageDescriptionV1Cause,
@@ -37,7 +46,14 @@ use {
         raw_window_handle::HasDisplayHandle,
     },
     raw_window_handle::RawDisplayHandle,
-    std::{cell::RefCell, collections::HashSet, f32::consts::PI, mem, ptr::NonNull, rc::Rc},
+    std::{
+        cell::{Cell, RefCell},
+        collections::HashSet,
+        f32::consts::PI,
+        mem,
+        ptr::NonNull,
+        rc::Rc,
+    },
     wl_client::{
         proxy::{self},
         Libwayland, QueueOwner,
@@ -61,12 +77,23 @@ struct State {
     wl_surface: WlSurface,
     wl_blend_surface: WlSurface,
     wp_color_management_surface_v1: WpColorManagementSurfaceV1,
+    wp_color_management_surface_feedback_v1: WpColorManagementSurfaceFeedbackV1,
     wp_color_management_blend_surface_v1: WpColorManagementSurfaceV1,
     xdg_surface: XdgSurface,
     _xdg_toplevel: XdgToplevel,
     vulkan_surface: VulkanSurface,
     vulkan_blend_surface: VulkanSurface,
     mutable: RefCell<Mutable>,
+    create_description_error_message: Cell<Option<Option<String>>>,
+    preferred_description_error_message: Cell<Option<Option<String>>>,
+    preferred_description_data: Cell<Option<DescriptionData>>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DescriptionData {
+    pub primaries: TestPrimaries,
+    pub tf: TransferFunction,
+    pub luminance: Option<Luminance>,
 }
 
 struct Mutable {
@@ -76,12 +103,12 @@ struct Mutable {
     description: TestColorDescription,
     matrix: ColorMatrix<Local, Lms>,
     need_render: bool,
+    preferred_description: Option<WpImageDescriptionV1>,
     pending_description: Option<WpImageDescriptionV1>,
     blend_subsurface: Option<WlSubsurface>,
-    error_message: Option<Option<String>>,
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum TestPrimaries {
     Named(NamedPrimaries),
     Custom(Primaries),
@@ -174,6 +201,8 @@ impl TestPane {
             .await;
         let wl_surface = wl_compositor.create_surface();
         let wp_color_management_surface_v1 = wp_color_manager_v1.get_surface(&wl_surface);
+        let wp_color_management_surface_feedback_v1 =
+            wp_color_manager_v1.get_surface_feedback(&wl_surface);
         let xdg_surface = xdg_wm_base.get_xdg_surface(&wl_surface);
         let xdg_toplevel = xdg_surface.get_toplevel();
         xdg_toplevel.set_title("test pane");
@@ -196,6 +225,7 @@ impl TestPane {
             wl_surface,
             wl_blend_surface,
             wp_color_management_surface_v1,
+            wp_color_management_surface_feedback_v1,
             wp_color_management_blend_surface_v1,
             xdg_surface: xdg_surface.clone(),
             _xdg_toplevel: xdg_toplevel.clone(),
@@ -208,13 +238,21 @@ impl TestPane {
                 description: TestColorDescription::None,
                 matrix: matrix_from_lms(Primaries::SRGB, Luminance::SRGB),
                 need_render: false,
+                preferred_description: None,
                 pending_description: None,
                 blend_subsurface: None,
-                error_message: None,
             }),
+            create_description_error_message: Default::default(),
+            preferred_description_error_message: Default::default(),
+            preferred_description_data: Default::default(),
         });
+        state.get_feedback();
         proxy::set_event_handler_local(&xdg_surface, state.clone());
         proxy::set_event_handler_local(&xdg_toplevel, state.clone());
+        proxy::set_event_handler_local(
+            &state.wp_color_management_surface_feedback_v1,
+            state.clone(),
+        );
         TestPane {
             queue,
             features: supported_features.into_inner(),
@@ -225,14 +263,22 @@ impl TestPane {
         }
     }
 
-    pub fn description_error_message(&self) -> Option<Option<String>> {
-        self.state.mutable.borrow_mut().error_message.take()
+    pub fn create_description_error_message(&self) -> Option<Option<String>> {
+        self.state.create_description_error_message.take()
+    }
+
+    pub fn preferred_description_error_message(&self) -> Option<Option<String>> {
+        self.state.preferred_description_error_message.take()
+    }
+
+    pub fn preferred_description_data(&self) -> Option<DescriptionData> {
+        self.state.preferred_description_data.take()
     }
 
     pub fn apply_config(&self, description: TestColorDescription, scene: TestScene) {
         let m = &mut *self.state.mutable.borrow_mut();
         if m.description != description {
-            m.error_message = Some(None);
+            self.state.create_description_error_message.set(Some(None));
             m.description = description;
             m.need_render = true;
             if let Some(prev) = m.pending_description.take() {
@@ -315,14 +361,16 @@ impl TestPane {
                         ) {
                             let m = &mut *self.1.mutable.borrow_mut();
                             m.pending_description = None;
-                            m.error_message = Some(Some(msg.to_string()));
+                            self.1
+                                .create_description_error_message
+                                .set(Some(Some(msg.to_string())));
                             self.0.destroy();
                         }
 
                         fn ready(&self, slf: &WpImageDescriptionV1Ref, _identity: u32) {
                             let m = &mut *self.1.mutable.borrow_mut();
                             m.pending_description = None;
-                            m.error_message = Some(None);
+                            self.1.create_description_error_message.set(Some(None));
                             self.1.wp_color_management_surface_v1.set_image_description(
                                 slf,
                                 WpColorManagerV1RenderIntent::PERCEPTUAL,
@@ -442,6 +490,183 @@ impl State {
             .unwrap();
         m.need_render = false;
     }
+
+    fn get_feedback(self: &Rc<Self>) {
+        let m = &mut *self.mutable.borrow_mut();
+        if let Some(desc) = m.preferred_description.take() {
+            desc.destroy();
+        }
+        self.preferred_description_data.set(None);
+        self.preferred_description_error_message.set(Some(None));
+
+        struct Eh(WpImageDescriptionV1, Rc<State>);
+        impl WpImageDescriptionV1EventHandler for Eh {
+            fn failed(
+                &self,
+                _slf: &WpImageDescriptionV1Ref,
+                _cause: WpImageDescriptionV1Cause,
+                msg: &str,
+            ) {
+                self.1
+                    .preferred_description_error_message
+                    .set(Some(Some(msg.to_string())));
+                self.0.destroy();
+            }
+
+            fn ready(&self, _slf: &WpImageDescriptionV1Ref, _identity: u32) {
+                struct Eh {
+                    desc: WpImageDescriptionV1,
+                    info: WpImageDescriptionInfoV1,
+                    state: Rc<State>,
+                    primaries: Cell<Option<TestPrimaries>>,
+                    tf: Cell<Option<TransferFunction>>,
+                    luminance: Cell<Option<Luminance>>,
+                }
+                impl Eh {
+                    fn error(&self, msg: String) {
+                        self.state
+                            .preferred_description_error_message
+                            .set(Some(Some(msg)));
+                        self.desc.destroy();
+                        proxy::destroy(&self.info);
+                    }
+                }
+                impl WpImageDescriptionInfoV1EventHandler for Eh {
+                    fn done(&self, _slf: &WpImageDescriptionInfoV1Ref) {
+                        let Some(primaries) = self.primaries.take() else {
+                            self.error("compositor did not send any primaries".to_string());
+                            return;
+                        };
+                        let Some(tf) = self.tf.take() else {
+                            self.error("compositor did not send any transfer function".to_string());
+                            return;
+                        };
+                        let m = &mut *self.state.mutable.borrow_mut();
+                        m.preferred_description = Some(self.desc.clone());
+                        self.state
+                            .preferred_description_data
+                            .set(Some(DescriptionData {
+                                primaries,
+                                tf,
+                                luminance: self.luminance.get(),
+                            }));
+                        proxy::destroy(&self.info);
+                    }
+
+                    fn primaries(
+                        &self,
+                        _slf: &WpImageDescriptionInfoV1Ref,
+                        r_x: i32,
+                        r_y: i32,
+                        g_x: i32,
+                        g_y: i32,
+                        b_x: i32,
+                        b_y: i32,
+                        w_x: i32,
+                        w_y: i32,
+                    ) {
+                        let map = |x: i32| F64(x as f64 / 1_000_000.0);
+                        let map = |x: i32, y: i32| (map(x), map(y));
+                        self.primaries.set(Some(TestPrimaries::Custom(Primaries {
+                            r: map(r_x, r_y),
+                            g: map(g_x, g_y),
+                            b: map(b_x, b_y),
+                            wp: map(w_x, w_y),
+                        })));
+                    }
+
+                    fn primaries_named(
+                        &self,
+                        _slf: &WpImageDescriptionInfoV1Ref,
+                        primaries: WpColorManagerV1Primaries,
+                    ) {
+                        let primaries = match primaries {
+                            WpColorManagerV1Primaries::SRGB => NamedPrimaries::Srgb,
+                            WpColorManagerV1Primaries::PAL_M => NamedPrimaries::PalM,
+                            WpColorManagerV1Primaries::PAL => NamedPrimaries::Pal,
+                            WpColorManagerV1Primaries::NTSC => NamedPrimaries::Ntsc,
+                            WpColorManagerV1Primaries::GENERIC_FILM => NamedPrimaries::GenericFilm,
+                            WpColorManagerV1Primaries::BT2020 => NamedPrimaries::Bt2020,
+                            WpColorManagerV1Primaries::CIE1931_XYZ => NamedPrimaries::Cie1931Xyz,
+                            WpColorManagerV1Primaries::DCI_P3 => NamedPrimaries::DciP3,
+                            WpColorManagerV1Primaries::DISPLAY_P3 => NamedPrimaries::DisplayP3,
+                            WpColorManagerV1Primaries::ADOBE_RGB => NamedPrimaries::AdobeRgb,
+                            _ => {
+                                self.error(format!("unsupported primaries {primaries:?}"));
+                                return;
+                            }
+                        };
+                        self.primaries.set(Some(TestPrimaries::Named(primaries)));
+                    }
+
+                    fn tf_power(&self, _slf: &WpImageDescriptionInfoV1Ref, _eexp: u32) {
+                        self.error("unsupported power transfer function".to_string());
+                        proxy::destroy(&self.info);
+                    }
+
+                    fn tf_named(
+                        &self,
+                        _slf: &WpImageDescriptionInfoV1Ref,
+                        tf: WpColorManagerV1TransferFunction,
+                    ) {
+                        let tf = match tf {
+                            WpColorManagerV1TransferFunction::BT1886 => TransferFunction::Bt1886,
+                            WpColorManagerV1TransferFunction::GAMMA22 => TransferFunction::Gamma22,
+                            WpColorManagerV1TransferFunction::GAMMA28 => TransferFunction::Gamma28,
+                            WpColorManagerV1TransferFunction::ST240 => TransferFunction::St240,
+                            WpColorManagerV1TransferFunction::EXT_LINEAR => {
+                                TransferFunction::Linear
+                            }
+                            WpColorManagerV1TransferFunction::LOG_100 => TransferFunction::Log100,
+                            WpColorManagerV1TransferFunction::LOG_316 => TransferFunction::Log316,
+                            WpColorManagerV1TransferFunction::SRGB => TransferFunction::Srgb,
+                            WpColorManagerV1TransferFunction::EXT_SRGB => TransferFunction::ExtSrgb,
+                            WpColorManagerV1TransferFunction::ST2084_PQ => {
+                                TransferFunction::St2084Pq
+                            }
+                            WpColorManagerV1TransferFunction::ST428 => TransferFunction::St428,
+                            _ => {
+                                self.error(format!("unsupported transfer function {tf:?}"));
+                                return;
+                            }
+                        };
+                        self.tf.set(Some(tf));
+                    }
+
+                    fn luminances(
+                        &self,
+                        _slf: &WpImageDescriptionInfoV1Ref,
+                        min_lum: u32,
+                        max_lum: u32,
+                        reference_lum: u32,
+                    ) {
+                        self.luminance.set(Some(Luminance {
+                            min: F64(min_lum as f64 / 10_000.0),
+                            max: F64(max_lum as f64),
+                            white: F64(reference_lum as f64),
+                        }));
+                    }
+                }
+                let info = self.0.get_information();
+                proxy::set_event_handler_local(
+                    &info.clone(),
+                    Eh {
+                        desc: self.0.clone(),
+                        info,
+                        state: self.1.clone(),
+                        primaries: Default::default(),
+                        tf: Default::default(),
+                        luminance: Default::default(),
+                    },
+                );
+            }
+        }
+
+        let desc = self
+            .wp_color_management_surface_feedback_v1
+            .get_preferred_parametric();
+        proxy::set_event_handler_local(&desc.clone(), Eh(desc, self.clone()))
+    }
 }
 
 impl XdgSurfaceEventHandler for Rc<State> {
@@ -466,5 +691,11 @@ impl XdgToplevelEventHandler for Rc<State> {
 
     fn close(&self, _slf: &XdgToplevelRef) {
         std::process::exit(0);
+    }
+}
+
+impl WpColorManagementSurfaceFeedbackV1EventHandler for Rc<State> {
+    fn preferred_changed(&self, _slf: &WpColorManagementSurfaceFeedbackV1Ref, _identity: u32) {
+        self.get_feedback();
     }
 }
