@@ -78,6 +78,7 @@ struct Mutable {
     need_render: bool,
     pending_description: Option<WpImageDescriptionV1>,
     blend_subsurface: Option<WlSubsurface>,
+    error_message: Option<Option<String>>,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -209,6 +210,7 @@ impl TestPane {
                 need_render: false,
                 pending_description: None,
                 blend_subsurface: None,
+                error_message: None,
             }),
         });
         proxy::set_event_handler_local(&xdg_surface, state.clone());
@@ -223,9 +225,14 @@ impl TestPane {
         }
     }
 
+    pub fn description_error_message(&self) -> Option<Option<String>> {
+        self.state.mutable.borrow_mut().error_message.take()
+    }
+
     pub fn apply_config(&self, description: TestColorDescription, scene: TestScene) {
         let m = &mut *self.state.mutable.borrow_mut();
         if m.description != description {
+            m.error_message = Some(None);
             m.description = description;
             m.need_render = true;
             if let Some(prev) = m.pending_description.take() {
@@ -306,13 +313,16 @@ impl TestPane {
                             _cause: WpImageDescriptionV1Cause,
                             msg: &str,
                         ) {
-                            self.1.mutable.borrow_mut().pending_description = None;
-                            eprintln!("Could not create image description: {}", msg);
+                            let m = &mut *self.1.mutable.borrow_mut();
+                            m.pending_description = None;
+                            m.error_message = Some(Some(msg.to_string()));
                             self.0.destroy();
                         }
 
                         fn ready(&self, slf: &WpImageDescriptionV1Ref, _identity: u32) {
-                            self.1.mutable.borrow_mut().pending_description = None;
+                            let m = &mut *self.1.mutable.borrow_mut();
+                            m.pending_description = None;
+                            m.error_message = Some(None);
                             self.1.wp_color_management_surface_v1.set_image_description(
                                 slf,
                                 WpColorManagerV1RenderIntent::PERCEPTUAL,
@@ -324,7 +334,7 @@ impl TestPane {
                                     WpColorManagerV1RenderIntent::PERCEPTUAL,
                                 );
                             self.0.destroy();
-                            self.1.render_frame(&mut self.1.mutable.borrow_mut());
+                            self.1.render_frame(m);
                         }
                     }
                     proxy::set_event_handler_local(&desc, Eh(desc.clone(), self.state.clone()));
