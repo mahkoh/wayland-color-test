@@ -8,7 +8,7 @@ egui = "0.31.1"
 egui-winit = { version = "0.31.1", features = ["wayland"] }
 egui-wgpu = { version =  "0.31.1", features = ["winit"] }
 pollster = "0.4.0"
-wl-client = "0.1.1"
+wl-client = "0.2.0"
 raw-window-handle = "0.6.2"
 async-io = "2.4.0"
 futures-util = "0.3.31"
@@ -24,6 +24,6 @@ gpu-alloc-ash = "0.7.0"
 isnt = "0.1.0"
 
 [build-dependencies]
-wl-client-builder = "0.1.0"
+wl-client-builder = "0.2.0"
 anyhow = "1.0.98"
 shaderc = "0.9.1"
