@@ -2,10 +2,7 @@ use {
     crate::{
         cmm::{Luminance, NamedPrimaries, Primaries, TransferFunction},
         ordered_float::F64,
-        protocols::{
-            color_management_v1::wp_color_manager_v1::WpColorManagerV1Feature,
-            wayland::{wl_callback::WlCallback, wl_surface::WlSurface},
-        },
+        protocols::color_management_v1::wp_color_manager_v1::WpColorManagerV1Feature,
         test_pane::{
             Color, DescriptionData, TestColorDescription, TestPane, TestPrimaries, TestScene,
         },
@@ -36,7 +33,6 @@ use {
     isnt::std_1::collections::IsntHashSetExt,
     linearize::{Linearize, LinearizeExt},
     pollster::block_on,
-    raw_window_handle::{HasWindowHandle, RawWindowHandle},
     std::{
         cell::Cell,
         mem,
@@ -45,12 +41,10 @@ use {
         sync::Arc,
         time::{Duration, Instant},
     },
-    wl_client::proxy,
 };
 
 pub struct ControlPane {
     ctx: Context,
-    wl_surface: WlSurface,
     window: Arc<Window>,
     window_id: WindowId,
     state: egui_winit::State,
@@ -88,11 +82,6 @@ impl ControlPane {
         let ctx = Context::default();
         let viewport_builder = ViewportBuilder::default().with_title("control pane");
         let window = egui_winit::create_window(&ctx, event_loop, &viewport_builder).unwrap();
-        let RawWindowHandle::Wayland(wl_surface) = window.window_handle().unwrap().as_raw() else {
-            unreachable!();
-        };
-        let wl_surface: WlSurface =
-            unsafe { test_pane.queue.wrap_wl_proxy(wl_surface.surface.cast()) };
         let window = Arc::new(window);
         let state = egui_winit::State::new(
             ctx.clone(),
@@ -137,7 +126,6 @@ impl ControlPane {
         let mut slf = Self {
             ctx,
             window_id: window.id(),
-            wl_surface,
             window,
             state,
             draw_state: init_wgpu(&painter),
@@ -193,7 +181,6 @@ impl ControlPane {
         if let Some(instant) = Instant::now().checked_add(repaint_delay) {
             self.repaint_after = Some(instant);
         }
-        self.need_repaint |= !self.output.shapes.is_empty();
         if !self.need_repaint {
             return;
         }
@@ -201,15 +188,7 @@ impl ControlPane {
             return;
         }
         self.window.pre_present_notify();
-        let frame = self.wl_surface.frame();
-        let have_frame = self.have_frame.clone();
-        proxy::set_event_handler_local(
-            &frame.clone(),
-            WlCallback::on_done(move |_, _| {
-                proxy::destroy(&frame);
-                have_frame.set(true);
-            }),
-        );
+        self.window.request_redraw();
         self.need_repaint = false;
         self.have_frame.set(false);
         self.state
@@ -243,12 +222,17 @@ impl ControlPane {
                 self.have_frame.set(true);
                 self.need_repaint = true;
             }
+            WindowEvent::RedrawRequested => {
+                self.have_frame.set(true);
+            }
             WindowEvent::CloseRequested => {
                 std::process::exit(0);
             }
             _ => {}
         }
-        self.need_repaint |= self.state.on_window_event(&self.window, &event).repaint;
+        if event != WindowEvent::RedrawRequested {
+            self.need_repaint |= self.state.on_window_event(&self.window, &event).repaint;
+        }
         self.maybe_run(test_pane);
     }
 
@@ -772,8 +756,11 @@ fn draw_scenes(ui: &mut Ui, ds: &mut DrawState) {
     ui.add_space(20.0);
     let max_lumen = config.max_lumen;
     let max_chroma = config.max_chroma;
-    let colors = |ui: &mut Ui, colors: &mut [(&str, &mut Color)]| {
-        Grid::new("colors").spacing([20.0, 20.0]).show(ui, |ui| {
+    let mut idx = 0;
+    let mut colors = |ui: &mut Ui, colors: &mut [(&str, &mut Color)]| {
+        let salt = format!("c{}", idx);
+        idx += 1;
+        Grid::new(salt).spacing([20.0, 20.0]).show(ui, |ui| {
             for (name, c) in colors {
                 ui.label(*name);
                 ui.vertical(|ui| {
