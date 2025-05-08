@@ -71,7 +71,7 @@
     only be done by creating a new major version of the extension.
   </description>
 
-  <interface name="wp_color_manager_v1" version="1">
+  <interface name="wp_color_manager_v1" version="2">
     <description summary="color manager singleton">
       A singleton global interface used for getting color management extensions
       for wl_surface and wl_output objects, and for creating client defined
@@ -149,7 +149,7 @@
         </description>
       </entry>
       <entry name="windows_scrgb" value="7"
-             summary="get_windows_scrgb request"/>
+             summary="create_windows_scrgb request"/>
     </enum>
 
     <enum name="primaries">
@@ -577,7 +577,7 @@
     </event>
   </interface>
 
-  <interface name="wp_color_management_output_v1" version="1">
+  <interface name="wp_color_management_output_v1" version="2">
     <description summary="output color properties">
       A wp_color_management_output_v1 describes the color properties of an
       output.
@@ -735,7 +735,7 @@
     </request>
   </interface>
 
-  <interface name="wp_color_management_surface_feedback_v1" version="1">
+  <interface name="wp_color_management_surface_feedback_v1" version="2">
     <description summary="color management extension to a surface">
         A wp_color_management_surface_feedback_v1 allows the client to get the
         preferred image description of a surface.
@@ -758,27 +758,14 @@
              summary="attempted to use an unsupported feature"/>
     </enum>
 
-    <event name="preferred_changed">
-      <description summary="the preferred image description changed">
-        The preferred image description is the one which likely has the most
-        performance and/or quality benefits for the compositor if used by the
-        client for its wl_surface contents. This event is sent whenever the
-        compositor changes the wl_surface's preferred image description.
-
-        This event sends the identity of the new preferred state as the argument,
-        so clients who are aware of the image description already can reuse it.
-        Otherwise, if the client client wants to know what the preferred image
-        description is, it shall use the get_preferred request.
-
-        The preferred image description is not automatically used for anything.
-        It is only a hint, and clients may set any valid image description with
-        set_image_description, but there might be performance and color accuracy
-        improvements by providing the wl_surface contents in the preferred
-        image description. Therefore clients that can, should render according
-        to the preferred image description
+    <event name="preferred_changed" deprecated-since="2">
+      <description summary="the preferred image description changed (32-bit)">
+        Starting from interface version 2, 'preferred_changed2' is sent instead
+        of this event. See the 'preferred_changed2' event for the definition.
       </description>
 
-      <arg name="identity" type="uint" summary="image description id number"/>
+      <arg name="identity" type="uint"
+           summary="the 32-bit image description id number"/>
     </event>
 
     <request name="get_preferred">
@@ -835,9 +822,38 @@
       <arg name="image_description"
            type="new_id" interface="wp_image_description_v1"/>
     </request>
+
+    <!-- Version 2 additions -->
+
+    <event name="preferred_changed2" since="2">
+      <description summary="the preferred image description changed">
+        The preferred image description is the one which likely has the most
+        performance and/or quality benefits for the compositor if used by the
+        client for its wl_surface contents. This event is sent whenever the
+        compositor changes the wl_surface's preferred image description.
+
+        This event sends the identity of the new preferred state as the argument,
+        so clients who are aware of the image description already can reuse it.
+        Otherwise, if the client client wants to know what the preferred image
+        description is, it shall use the get_preferred request.
+
+        The preferred image description is not automatically used for anything.
+        It is only a hint, and clients may set any valid image description with
+        set_image_description, but there might be performance and color accuracy
+        improvements by providing the wl_surface contents in the preferred
+        image description. Therefore clients that can, should render according
+        to the preferred image description
+      </description>
+
+      <arg name="identity_hi" type="uint"
+           summary="high 32 bits of the 64-bit image description id number"/>
+      <arg name="identity_lo" type="uint"
+           summary="low 32 bits of the 64-bit image description id number"/>
+    </event>
+
   </interface>
 
-  <interface name="wp_image_description_creator_icc_v1" version="1">
+  <interface name="wp_image_description_creator_icc_v1" version="2">
     <description summary="holder of image description ICC information">
       This type of object is used for collecting all the information required
       to create a wp_image_description_v1 object from an ICC file. A complete
@@ -949,7 +965,7 @@
     </request>
   </interface>
 
-  <interface name="wp_image_description_creator_params_v1" version="1">
+  <interface name="wp_image_description_creator_params_v1" version="2">
     <description summary="holder of image description parameters">
       This type of object is used for collecting all the parameters required
       to create a wp_image_description_v1 object. A complete set of required
@@ -1310,7 +1326,7 @@
     </request>
   </interface>
 
-  <interface name="wp_image_description_v1" version="1">
+  <interface name="wp_image_description_v1" version="2">
     <description summary="Colorimetric image description">
       An image description carries information about the color encoding used on
       a surface when attached to a wl_surface via
@@ -1385,38 +1401,22 @@
            summary="ad hoc human-readable explanation"/>
     </event>
 
-    <event name="ready">
-      <description summary="indication that the object is ready to be used">
-        Once this event has been sent, the wp_image_description_v1 object is
-        deemed "ready". Ready objects can be used to send requests and can be
-        used through other interfaces.
+    <event name="ready" deprecated-since="2">
+      <description summary="the object is ready to be used (32-bit)">
+        Starting from interface version 2, the 'ready2' event is sent instead
+        of this event.
 
-        Every ready wp_image_description_v1 protocol object refers to an
-        underlying image description record in the compositor. Multiple protocol
-        objects may end up referring to the same record. Clients may identify
-        these "copies" by comparing their id numbers: if the numbers from two
-        protocol objects are identical, the protocol objects refer to the same
-        image description record. Two different image description records
-        cannot have the same id number simultaneously. The id number does not
-        change during the lifetime of the image description record.
+        For the definition of this event, see the 'ready2' event. The
+        difference to this event is as follows.
 
         The id number is valid only as long as the protocol object is alive. If
         all protocol objects referring to the same image description record are
         destroyed, the id number may be recycled for a different image
         description record.
-
-        Image description id number is not a protocol object id. Zero is
-        reserved as an invalid id number. It shall not be possible for a client
-        to refer to an image description by its id number in protocol. The id
-        numbers might not be portable between Wayland connections. A compositor
-        shall not send an invalid id number.
-
-        This identity allows clients to de-duplicate image description records
-        and avoid get_information request if they already have the image
-        description information.
       </description>
 
-      <arg name="identity" type="uint" summary="image description id number"/>
+      <arg name="identity" type="uint"
+           summary="the 32-bit image description id number"/>
     </event>
 
     <request name="get_information">
@@ -1433,6 +1433,42 @@
       <arg name="information"
            type="new_id" interface="wp_image_description_info_v1"/>
     </request>
+
+    <!-- Version 2 additions -->
+
+    <event name="ready2" since="2">
+      <description summary="the object is ready to be used">
+        Once this event has been sent, the wp_image_description_v1 object is
+        deemed "ready". Ready objects can be used to send requests and can be
+        used through other interfaces.
+
+        Every ready wp_image_description_v1 protocol object refers to an
+        underlying image description record in the compositor. Multiple protocol
+        objects may end up referring to the same record. Clients may identify
+        these "copies" by comparing their id numbers: if the numbers from two
+        protocol objects are identical, the protocol objects refer to the same
+        image description record. Two different image description records
+        cannot have the same id number simultaneously. The id number does not
+        change during the lifetime of the image description record.
+
+        Image description id number is not a protocol object id. Zero is
+        reserved as an invalid id number. It shall not be possible for a client
+        to refer to an image description by its id number in protocol. The id
+        numbers might not be portable between Wayland connections. A compositor
+        shall not send an invalid id number.
+
+        Compositors must not recycle image description id numbers.
+
+        This identity allows clients to de-duplicate image description records
+        and avoid get_information request if they already have the image
+        description information.
+      </description>
+
+      <arg name="identity_hi" type="uint"
+           summary="high 32 bits of the 64-bit image description id number"/>
+      <arg name="identity_lo" type="uint"
+           summary="low 32 bits of the 64-bit image description id number"/>
+    </event>
   </interface>
 
   <interface name="wp_image_description_info_v1" version="1">
