@@ -45,6 +45,7 @@ use {
         event_loop::{EventLoop, OwnedDisplayHandle},
         raw_window_handle::HasDisplayHandle,
     },
+    isnt::std_1::collections::IsntHashSet2Ext,
     raw_window_handle::RawDisplayHandle,
     std::{
         cell::{Cell, RefCell},
@@ -62,14 +63,19 @@ use {
 
 pub struct TestPane {
     pub queue: QueueOwner,
-    pub features: HashSet<WpColorManagerV1Feature>,
-    pub tf: HashSet<WpColorManagerV1TransferFunction>,
-    pub primaries: HashSet<WpColorManagerV1Primaries>,
+    pub caps: Rc<Capablities>,
     state: Rc<State>,
     _display_handle: OwnedDisplayHandle,
 }
 
+pub struct Capablities {
+    pub features: HashSet<WpColorManagerV1Feature>,
+    pub tf: HashSet<WpColorManagerV1TransferFunction>,
+    pub primaries: HashSet<WpColorManagerV1Primaries>,
+}
+
 struct State {
+    caps: Rc<Capablities>,
     _xdg_wm_base: XdgWmBase,
     _wl_compositor: WlCompositor,
     wl_subcompositor: WlSubcompositor,
@@ -217,7 +223,13 @@ impl TestPane {
         let vulkan_blend_surface = vulkan_device
             .create_surface(wl_display, &wl_blend_surface)
             .unwrap();
+        let caps = Rc::new(Capablities {
+            features: supported_features.into_inner(),
+            tf: supported_tf.into_inner(),
+            primaries: supported_primaries.into_inner(),
+        });
         let state = Rc::new(State {
+            caps: caps.clone(),
             _xdg_wm_base: xdg_wm_base,
             _wl_compositor: wl_compositor,
             wl_subcompositor,
@@ -255,9 +267,7 @@ impl TestPane {
         );
         TestPane {
             queue,
-            features: supported_features.into_inner(),
-            tf: supported_tf.into_inner(),
-            primaries: supported_primaries.into_inner(),
+            caps,
             state,
             _display_handle: display_handle,
         }
@@ -492,6 +502,17 @@ impl State {
     }
 
     fn get_feedback(self: &Rc<Self>) {
+        if self
+            .caps
+            .features
+            .not_contains(&WpColorManagerV1Feature::PARAMETRIC)
+        {
+            self.preferred_description_error_message.set(Some(Some(
+                "Compositor does not support parametric descriptions".to_string(),
+            )));
+            return;
+        }
+        dbg!(&self.caps.features);
         let m = &mut *self.mutable.borrow_mut();
         if let Some(desc) = m.preferred_description.take() {
             desc.destroy();

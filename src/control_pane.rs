@@ -566,6 +566,10 @@ fn draw_color_description(ui: &mut Ui, test_pane: &TestPane, ds: &mut DrawState)
 }
 
 fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut DrawState) {
+    let supported_features = &test_pane.caps.features;
+    let supported_tf = &test_pane.caps.tf;
+    let supported_primaries = &test_pane.caps.primaries;
+
     let config = &mut ds.config;
     ComboBox::from_label("Type")
         .selected_text(config.cd_type)
@@ -574,17 +578,12 @@ fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut D
                 ui.selectable_value(&mut config.cd_type, ty, ty);
             };
             val(ColorDescriptionType::None);
-            if test_pane
-                .features
-                .contains(&WpColorManagerV1Feature::WINDOWS_SCRGB)
-            {
+            if supported_features.contains(&WpColorManagerV1Feature::WINDOWS_SCRGB) {
                 val(ColorDescriptionType::ScRgb);
             }
-            if test_pane
-                .features
-                .contains(&WpColorManagerV1Feature::PARAMETRIC)
-                && test_pane.primaries.is_not_empty()
-                && test_pane.tf.is_not_empty()
+            if supported_features.contains(&WpColorManagerV1Feature::PARAMETRIC)
+                && supported_primaries.is_not_empty()
+                && supported_tf.is_not_empty()
             {
                 val(ColorDescriptionType::Parametric);
             }
@@ -592,10 +591,7 @@ fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut D
     ui.add_space(20.0);
     let mut primaries;
     if config.cd_type == ColorDescriptionType::Parametric {
-        if test_pane
-            .features
-            .contains(&WpColorManagerV1Feature::SET_PRIMARIES)
-        {
+        if supported_features.contains(&WpColorManagerV1Feature::SET_PRIMARIES) {
             ui.checkbox(&mut config.use_custom_primaries, "Custom primaries");
         }
         ui.add_enabled_ui(!config.use_custom_primaries, |ui| {
@@ -603,7 +599,7 @@ fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut D
                 .selected_text(config.named_primaries)
                 .show_ui(ui, |ui| {
                     for primary in NamedPrimaries::variants() {
-                        if test_pane.primaries.contains(&primary.wayland()) {
+                        if supported_primaries.contains(&primary.wayland()) {
                             ui.selectable_value(&mut config.named_primaries, primary, primary);
                         }
                     }
@@ -637,15 +633,12 @@ fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut D
             .selected_text(config.tf)
             .show_ui(ui, |ui| {
                 for tf in TransferFunction::variants() {
-                    if test_pane.tf.contains(&tf.wayland()) {
+                    if supported_tf.contains(&tf.wayland()) {
                         ui.selectable_value(&mut config.tf, tf, tf);
                     }
                 }
             });
-        if test_pane
-            .features
-            .contains(&WpColorManagerV1Feature::SET_LUMINANCES)
-        {
+        if supported_features.contains(&WpColorManagerV1Feature::SET_LUMINANCES) {
             ui.checkbox(&mut config.enable_luminance, "Luminance");
             if config.enable_luminance {
                 Slider::new(&mut config.luminance.min.0, 0.0..=100.0)
