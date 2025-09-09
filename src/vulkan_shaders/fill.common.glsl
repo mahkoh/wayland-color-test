@@ -7,7 +7,11 @@ layout(buffer_reference, buffer_reference_align = 16, row_major, std430) readonl
 	float x2;
 	float y2;
 	vec4 color[4];
-	uint oetf;
+	uint eotf;
+	float eotf_arg1;
+	float eotf_arg2;
+	float eotf_arg3;
+	float eotf_arg4;
 };
 
 layout(push_constant, std430) uniform PushData {

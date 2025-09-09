@@ -1,6 +1,6 @@
 use {
     crate::{
-        cmm::{ColorMatrix, Lms, Local, TransferFunction},
+        cmm::{ColorMatrix, Lms, Local, NamedTransferFunction, TransferFunction},
         protocols::wayland::wl_surface::WlSurface,
     },
     ash::{
@@ -498,7 +498,11 @@ impl VulkanDevice {
 }
 
 impl VulkanSurface {
-    fn ensure_swapchain(&self, width: u32, height: u32) -> Result<RefMut<VulkanSwapchain>, Error> {
+    fn ensure_swapchain(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<RefMut<'_, VulkanSwapchain>, Error> {
         let mut sc = self.swapchain.borrow_mut();
         let mut recreate = false;
         if !recreate {
@@ -661,7 +665,8 @@ impl VulkanSurface {
         height: u32,
         scene: Scene,
         lms_to_local: ColorMatrix<Local, Lms>,
-        oetf: TransferFunction,
+        tf: TransferFunction,
+        tf_args: [f32; 4],
     ) -> Result<(), Error> {
         self.gc(false)?;
         let dev = &self.device.device;
@@ -724,18 +729,21 @@ impl VulkanSurface {
         }
         let mut ops = vec![];
         let lms_to_local = lms_to_local.to_f32();
-        let oetf = match oetf {
-            TransferFunction::Srgb => 0,
-            TransferFunction::Linear => 1,
-            TransferFunction::St2084Pq => 2,
-            TransferFunction::Bt1886 => 3,
-            TransferFunction::Gamma22 => 4,
-            TransferFunction::Gamma28 => 5,
-            TransferFunction::St240 => 6,
-            TransferFunction::ExtSrgb => 7,
-            TransferFunction::Log100 => 8,
-            TransferFunction::Log316 => 9,
-            TransferFunction::St428 => 10,
+        let eotf = match tf {
+            TransferFunction::Named(n) => match n {
+                NamedTransferFunction::Srgb => 4,
+                NamedTransferFunction::Linear => 1,
+                NamedTransferFunction::St2084Pq => 2,
+                NamedTransferFunction::Bt1886 => 3,
+                NamedTransferFunction::Gamma22 => 4,
+                NamedTransferFunction::Gamma28 => 5,
+                NamedTransferFunction::St240 => 6,
+                NamedTransferFunction::ExtSrgb => 4,
+                NamedTransferFunction::Log100 => 8,
+                NamedTransferFunction::Log316 => 9,
+                NamedTransferFunction::St428 => 10,
+            },
+            TransferFunction::Pow => 11,
         };
         let mut fill = |x1: f32, y1: f32, x2: f32, y2: f32, color: [[f32; 4]; 4]| {
             let fill = self.allocate_fill_buffer()?;
@@ -746,7 +754,8 @@ impl VulkanSurface {
                 x2,
                 y2,
                 color,
-                oetf,
+                eotf,
+                eotf_args: tf_args,
             };
             unsafe {
                 dev.cmd_update_buffer(buffer, fill.buffer, 0, bytes_of(&data));
@@ -1070,7 +1079,8 @@ struct FillData {
     x2: f32,
     y2: f32,
     color: [[f32; 4]; 4],
-    oetf: u32,
+    eotf: u32,
+    eotf_args: [f32; 4],
 }
 
 #[derive(NoUninit, Copy, Clone)]
