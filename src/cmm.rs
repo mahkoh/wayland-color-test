@@ -34,7 +34,7 @@ pub struct Lms;
 pub struct Bradford;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Linearize)]
-pub enum TransferFunction {
+pub enum NamedTransferFunction {
     Srgb,
     Linear,
     St2084Pq,
@@ -48,20 +48,32 @@ pub enum TransferFunction {
     St428,
 }
 
-impl TransferFunction {
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Linearize)]
+pub enum TransferFunction {
+    Named(NamedTransferFunction),
+    Pow,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TransferFunctionWithArgs {
+    pub tf: TransferFunction,
+    pub pow: f32,
+}
+
+impl NamedTransferFunction {
     pub const fn wayland(self) -> WpColorManagerV1TransferFunction {
         match self {
-            TransferFunction::Srgb => WpColorManagerV1TransferFunction::SRGB,
-            TransferFunction::Linear => WpColorManagerV1TransferFunction::EXT_LINEAR,
-            TransferFunction::St2084Pq => WpColorManagerV1TransferFunction::ST2084_PQ,
-            TransferFunction::Bt1886 => WpColorManagerV1TransferFunction::BT1886,
-            TransferFunction::Gamma22 => WpColorManagerV1TransferFunction::GAMMA22,
-            TransferFunction::Gamma28 => WpColorManagerV1TransferFunction::GAMMA28,
-            TransferFunction::St240 => WpColorManagerV1TransferFunction::ST240,
-            TransferFunction::ExtSrgb => WpColorManagerV1TransferFunction::EXT_SRGB,
-            TransferFunction::Log100 => WpColorManagerV1TransferFunction::LOG_100,
-            TransferFunction::Log316 => WpColorManagerV1TransferFunction::LOG_316,
-            TransferFunction::St428 => WpColorManagerV1TransferFunction::ST428,
+            NamedTransferFunction::Srgb => WpColorManagerV1TransferFunction::SRGB,
+            NamedTransferFunction::Linear => WpColorManagerV1TransferFunction::EXT_LINEAR,
+            NamedTransferFunction::St2084Pq => WpColorManagerV1TransferFunction::ST2084_PQ,
+            NamedTransferFunction::Bt1886 => WpColorManagerV1TransferFunction::BT1886,
+            NamedTransferFunction::Gamma22 => WpColorManagerV1TransferFunction::GAMMA22,
+            NamedTransferFunction::Gamma28 => WpColorManagerV1TransferFunction::GAMMA28,
+            NamedTransferFunction::St240 => WpColorManagerV1TransferFunction::ST240,
+            NamedTransferFunction::ExtSrgb => WpColorManagerV1TransferFunction::EXT_SRGB,
+            NamedTransferFunction::Log100 => WpColorManagerV1TransferFunction::LOG_100,
+            NamedTransferFunction::Log316 => WpColorManagerV1TransferFunction::LOG_316,
+            NamedTransferFunction::St428 => WpColorManagerV1TransferFunction::ST428,
         }
     }
 }

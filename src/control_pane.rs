@@ -1,6 +1,9 @@
 use {
     crate::{
-        cmm::{Luminance, NamedPrimaries, Primaries, TransferFunction},
+        cmm::{
+            Luminance, NamedPrimaries, NamedTransferFunction, Primaries, TransferFunction,
+            TransferFunctionWithArgs,
+        },
         ordered_float::F64,
         protocols::color_management_v1::wp_color_manager_v1::WpColorManagerV1Feature,
         test_pane::{
@@ -164,7 +167,10 @@ impl ControlPane {
                         true => TestPrimaries::Custom(config.primaries),
                         false => TestPrimaries::Named(config.named_primaries),
                     },
-                    transfer_function: config.tf,
+                    transfer_function: TransferFunctionWithArgs {
+                        tf: config.tf,
+                        pow: config.tf_power,
+                    },
                     luminance: config.enable_luminance.then_some(config.luminance),
                 },
             };
@@ -338,18 +344,27 @@ impl From<NamedPrimaries> for WidgetText {
 
 impl From<TransferFunction> for WidgetText {
     fn from(val: TransferFunction) -> Self {
+        match val {
+            TransferFunction::Named(n) => n.into(),
+            TransferFunction::Pow => "power".into(),
+        }
+    }
+}
+
+impl From<NamedTransferFunction> for WidgetText {
+    fn from(val: NamedTransferFunction) -> Self {
         let txt = match val {
-            TransferFunction::Srgb => "srgb",
-            TransferFunction::Linear => "ext_linear",
-            TransferFunction::St2084Pq => "st2084_pq",
-            TransferFunction::Bt1886 => "bt1886",
-            TransferFunction::Gamma22 => "gamma22",
-            TransferFunction::Gamma28 => "gamma28",
-            TransferFunction::St240 => "st240",
-            TransferFunction::ExtSrgb => "ext_srgb",
-            TransferFunction::Log100 => "log_100",
-            TransferFunction::Log316 => "log_316",
-            TransferFunction::St428 => "st428",
+            NamedTransferFunction::Srgb => "srgb",
+            NamedTransferFunction::Linear => "ext_linear",
+            NamedTransferFunction::St2084Pq => "st2084_pq",
+            NamedTransferFunction::Bt1886 => "bt1886",
+            NamedTransferFunction::Gamma22 => "gamma22",
+            NamedTransferFunction::Gamma28 => "gamma28",
+            NamedTransferFunction::St240 => "st240",
+            NamedTransferFunction::ExtSrgb => "ext_srgb",
+            NamedTransferFunction::Log100 => "log_100",
+            NamedTransferFunction::Log316 => "log_316",
+            NamedTransferFunction::St428 => "st428",
         };
         txt.into()
     }
@@ -367,6 +382,7 @@ struct ControlPaneConfig {
     named_primaries: NamedPrimaries,
     use_custom_primaries: bool,
     tf: TransferFunction,
+    tf_power: f32,
     enable_luminance: bool,
     luminance: Luminance,
     primaries: Primaries,
@@ -405,7 +421,8 @@ impl Default for ControlPaneConfig {
             cd_type: ColorDescriptionType::None,
             named_primaries: NamedPrimaries::Srgb,
             use_custom_primaries: false,
-            tf: TransferFunction::Srgb,
+            tf: TransferFunction::Named(NamedTransferFunction::Gamma22),
+            tf_power: 2.2,
             enable_luminance: false,
             luminance: Default::default(),
             primaries: Primaries::SRGB,
@@ -632,12 +649,25 @@ fn draw_color_description_settings(ui: &mut Ui, test_pane: &TestPane, ds: &mut D
         ComboBox::from_label("Transfer function")
             .selected_text(config.tf)
             .show_ui(ui, |ui| {
-                for tf in TransferFunction::variants() {
+                for tf in NamedTransferFunction::variants() {
                     if supported_tf.contains(&tf.wayland()) {
-                        ui.selectable_value(&mut config.tf, tf, tf);
+                        ui.selectable_value(&mut config.tf, TransferFunction::Named(tf), tf);
                     }
                 }
+                if supported_features.contains(&WpColorManagerV1Feature::SET_TF_POWER) {
+                    ui.selectable_value(
+                        &mut config.tf,
+                        TransferFunction::Pow,
+                        TransferFunction::Pow,
+                    );
+                }
             });
+        if config.tf == TransferFunction::Pow {
+            Slider::new(&mut config.tf_power, 1.0..=10.0)
+                .prefix("Power: ")
+                .drag_value_speed(0.1)
+                .ui(ui);
+        }
         if supported_features.contains(&WpColorManagerV1Feature::SET_LUMINANCES) {
             ui.checkbox(&mut config.enable_luminance, "Luminance");
             if config.enable_luminance {
@@ -699,7 +729,14 @@ fn draw_feedback(ui: &mut Ui, ds: &mut DrawState) {
             ui.add_space(10.0);
             ui.horizontal_top(|ui| {
                 ui.label("Transfer function:");
-                ui.label(data.tf);
+                match data.tf {
+                    TransferFunction::Named(n) => {
+                        ui.label(n);
+                    }
+                    TransferFunction::Pow => {
+                        ui.label(format!("pow({})", data.tf_power));
+                    }
+                }
             });
             ui.add_space(10.0);
             if let Some(lum) = data.luminance {

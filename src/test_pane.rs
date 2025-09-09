@@ -1,8 +1,8 @@
 use {
     crate::{
         cmm::{
-            matrix_from_lms, ColorMatrix, Lms, Local, Luminance, NamedPrimaries, Primaries,
-            TransferFunction,
+            matrix_from_lms, ColorMatrix, Lms, Local, Luminance, NamedPrimaries,
+            NamedTransferFunction, Primaries, TransferFunction, TransferFunctionWithArgs,
         },
         ordered_float::F64,
         protocols::{
@@ -99,6 +99,7 @@ struct State {
 pub struct DescriptionData {
     pub primaries: TestPrimaries,
     pub tf: TransferFunction,
+    pub tf_power: f32,
     pub luminance: Option<Luminance>,
 }
 
@@ -107,6 +108,7 @@ struct Mutable {
     width: i32,
     height: i32,
     description: TestColorDescription,
+    vulkan_tf_args: [f32; 4],
     matrix: ColorMatrix<Local, Lms>,
     need_render: bool,
     preferred_description: Option<WpImageDescriptionV1>,
@@ -126,7 +128,7 @@ pub enum TestColorDescription {
     ScRgb,
     Parametric {
         primaries: TestPrimaries,
-        transfer_function: TransferFunction,
+        transfer_function: TransferFunctionWithArgs,
         luminance: Option<Luminance>,
     },
 }
@@ -248,6 +250,7 @@ impl TestPane {
                 width: 0,
                 height: 0,
                 description: TestColorDescription::None,
+                vulkan_tf_args: [0.0; 4],
                 matrix: matrix_from_lms(Primaries::SRGB, Luminance::SRGB),
                 need_render: false,
                 preferred_description: None,
@@ -315,18 +318,39 @@ impl TestPane {
                     luminance,
                 } => {
                     {
-                        let mut lum = match transfer_function {
-                            TransferFunction::St2084Pq => Luminance::ST2084_PQ,
-                            TransferFunction::Bt1886 => Luminance::BT1886,
+                        let mut lum = match transfer_function.tf {
+                            TransferFunction::Named(NamedTransferFunction::St2084Pq) => {
+                                Luminance::ST2084_PQ
+                            }
+                            TransferFunction::Named(NamedTransferFunction::Bt1886) => {
+                                Luminance::BT1886
+                            }
                             _ => Luminance::SRGB,
                         };
                         if let Some(l) = luminance {
                             lum.min = l.min;
                             lum.white = l.white;
-                            if transfer_function == TransferFunction::St2084Pq {
+                            if transfer_function.tf
+                                == TransferFunction::Named(NamedTransferFunction::St2084Pq)
+                            {
                                 lum.max.0 = l.min.0 + 10000.0;
                             } else {
                                 lum.max = l.max;
+                            }
+                        }
+                        match transfer_function.tf {
+                            TransferFunction::Named(n) => {
+                                if n == NamedTransferFunction::Bt1886 {
+                                    let c = (lum.min.0 / lum.max.0) as f32;
+                                    let gamma = 1.0 / 2.4;
+                                    m.vulkan_tf_args[0] = 1.0 / (1.0 - c.powf(gamma));
+                                    m.vulkan_tf_args[1] = 1.0 - c;
+                                    m.vulkan_tf_args[2] = c;
+                                    m.vulkan_tf_args[3] = c.powf(gamma);
+                                }
+                            }
+                            TransferFunction::Pow => {
+                                m.vulkan_tf_args[0] = 1.0 / transfer_function.pow;
                             }
                         }
                         let primaries = match primaries {
@@ -352,7 +376,14 @@ impl TestPane {
                             );
                         }
                     }
-                    c.set_tf_named(transfer_function.wayland());
+                    match transfer_function.tf {
+                        TransferFunction::Named(n) => {
+                            c.set_tf_named(n.wayland());
+                        }
+                        TransferFunction::Pow => {
+                            c.set_tf_power((transfer_function.pow * 10_000.0) as u32);
+                        }
+                    }
                     if let Some(l) = luminance {
                         c.set_luminances(
                             (l.min.0 * 10000.0) as u32,
@@ -465,11 +496,11 @@ impl State {
             return;
         }
         let tf = match m.description {
-            TestColorDescription::None => TransferFunction::Srgb,
-            TestColorDescription::ScRgb => TransferFunction::Linear,
+            TestColorDescription::None => TransferFunction::Named(NamedTransferFunction::Gamma22),
+            TestColorDescription::ScRgb => TransferFunction::Named(NamedTransferFunction::Linear),
             TestColorDescription::Parametric {
                 transfer_function, ..
-            } => transfer_function,
+            } => transfer_function.tf,
         };
         let scene = match m.scene {
             TestScene::Fill(color) => Scene::Fill(color.to_lab()),
@@ -490,13 +521,21 @@ impl State {
                         Scene::BlendLeft(colors[1].to_lab_alpha(alpha)),
                         m.matrix,
                         tf,
+                        m.vulkan_tf_args,
                     )
                     .unwrap();
                 Scene::BlendRight([colors[0].to_lab(), colors[1].to_lab_alpha(alpha)])
             }
         };
         self.vulkan_surface
-            .render(m.width as _, m.height as _, scene, m.matrix, tf)
+            .render(
+                m.width as _,
+                m.height as _,
+                scene,
+                m.matrix,
+                tf,
+                m.vulkan_tf_args,
+            )
             .unwrap();
         m.need_render = false;
     }
@@ -541,6 +580,7 @@ impl State {
                     state: Rc<State>,
                     primaries: Cell<Option<TestPrimaries>>,
                     tf: Cell<Option<TransferFunction>>,
+                    tf_power: Cell<f32>,
                     luminance: Cell<Option<Luminance>>,
                 }
                 impl Eh {
@@ -569,6 +609,7 @@ impl State {
                             .set(Some(DescriptionData {
                                 primaries,
                                 tf,
+                                tf_power: self.tf_power.get(),
                                 luminance: self.luminance.get(),
                             }));
                         proxy::destroy(&self.info);
@@ -620,9 +661,9 @@ impl State {
                         self.primaries.set(Some(TestPrimaries::Named(primaries)));
                     }
 
-                    fn tf_power(&self, _slf: &WpImageDescriptionInfoV1Ref, _eexp: u32) {
-                        self.error("unsupported power transfer function".to_string());
-                        proxy::destroy(&self.info);
+                    fn tf_power(&self, _slf: &WpImageDescriptionInfoV1Ref, eexp: u32) {
+                        self.tf.set(Some(TransferFunction::Pow));
+                        self.tf_power.set(eexp as f32 / 10_000.0);
                     }
 
                     fn tf_named(
@@ -631,27 +672,39 @@ impl State {
                         tf: WpColorManagerV1TransferFunction,
                     ) {
                         let tf = match tf {
-                            WpColorManagerV1TransferFunction::BT1886 => TransferFunction::Bt1886,
-                            WpColorManagerV1TransferFunction::GAMMA22 => TransferFunction::Gamma22,
-                            WpColorManagerV1TransferFunction::GAMMA28 => TransferFunction::Gamma28,
-                            WpColorManagerV1TransferFunction::ST240 => TransferFunction::St240,
+                            WpColorManagerV1TransferFunction::BT1886 => {
+                                NamedTransferFunction::Bt1886
+                            }
+                            WpColorManagerV1TransferFunction::GAMMA22 => {
+                                NamedTransferFunction::Gamma22
+                            }
+                            WpColorManagerV1TransferFunction::GAMMA28 => {
+                                NamedTransferFunction::Gamma28
+                            }
+                            WpColorManagerV1TransferFunction::ST240 => NamedTransferFunction::St240,
                             WpColorManagerV1TransferFunction::EXT_LINEAR => {
-                                TransferFunction::Linear
+                                NamedTransferFunction::Linear
                             }
-                            WpColorManagerV1TransferFunction::LOG_100 => TransferFunction::Log100,
-                            WpColorManagerV1TransferFunction::LOG_316 => TransferFunction::Log316,
-                            WpColorManagerV1TransferFunction::SRGB => TransferFunction::Srgb,
-                            WpColorManagerV1TransferFunction::EXT_SRGB => TransferFunction::ExtSrgb,
+                            WpColorManagerV1TransferFunction::LOG_100 => {
+                                NamedTransferFunction::Log100
+                            }
+                            WpColorManagerV1TransferFunction::LOG_316 => {
+                                NamedTransferFunction::Log316
+                            }
+                            WpColorManagerV1TransferFunction::SRGB => NamedTransferFunction::Srgb,
+                            WpColorManagerV1TransferFunction::EXT_SRGB => {
+                                NamedTransferFunction::ExtSrgb
+                            }
                             WpColorManagerV1TransferFunction::ST2084_PQ => {
-                                TransferFunction::St2084Pq
+                                NamedTransferFunction::St2084Pq
                             }
-                            WpColorManagerV1TransferFunction::ST428 => TransferFunction::St428,
+                            WpColorManagerV1TransferFunction::ST428 => NamedTransferFunction::St428,
                             _ => {
                                 self.error(format!("unsupported transfer function {tf:?}"));
                                 return;
                             }
                         };
-                        self.tf.set(Some(tf));
+                        self.tf.set(Some(TransferFunction::Named(tf)));
                     }
 
                     fn luminances(
@@ -677,6 +730,7 @@ impl State {
                         state: self.1.clone(),
                         primaries: Default::default(),
                         tf: Default::default(),
+                        tf_power: Default::default(),
                         luminance: Default::default(),
                     },
                 );
