@@ -317,27 +317,25 @@ impl TestPane {
                     transfer_function,
                     luminance,
                 } => {
-                    {
-                        let mut lum = match transfer_function.tf {
-                            TransferFunction::Named(NamedTransferFunction::St2084Pq) => {
-                                Luminance::ST2084_PQ
-                            }
-                            TransferFunction::Named(NamedTransferFunction::Bt1886) => {
-                                Luminance::BT1886
-                            }
-                            _ => Luminance::SRGB,
-                        };
-                        if let Some(l) = luminance {
-                            lum.min = l.min;
-                            lum.white = l.white;
-                            if transfer_function.tf
-                                == TransferFunction::Named(NamedTransferFunction::St2084Pq)
-                            {
-                                lum.max.0 = l.min.0 + 10000.0;
-                            } else {
-                                lum.max = l.max;
-                            }
+                    let mut lum = match transfer_function.tf {
+                        TransferFunction::Named(NamedTransferFunction::St2084Pq) => {
+                            Luminance::ST2084_PQ
                         }
+                        TransferFunction::Named(NamedTransferFunction::Bt1886) => Luminance::BT1886,
+                        _ => Luminance::SRGB,
+                    };
+                    if let Some(l) = luminance {
+                        lum.min = l.min;
+                        lum.white = l.white;
+                        if transfer_function.tf
+                            == TransferFunction::Named(NamedTransferFunction::St2084Pq)
+                        {
+                            lum.max.0 = l.min.0 + 10000.0;
+                        } else {
+                            lum.max = l.max;
+                        }
+                    }
+                    {
                         match transfer_function.tf {
                             TransferFunction::Named(n) => {
                                 if n == NamedTransferFunction::Bt1886 {
@@ -391,6 +389,8 @@ impl TestPane {
                             l.white.0 as u32,
                         );
                     }
+                    c.set_max_cll(lum.white.0 as _);
+                    c.set_max_fall(lum.white.0 as _);
                     let desc = c.create();
                     struct Eh(WpImageDescriptionV1, Rc<State>);
                     impl WpImageDescriptionV1EventHandler for Eh {
