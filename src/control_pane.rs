@@ -131,7 +131,7 @@ impl ControlPane {
             window_id: window.id(),
             window,
             state,
-            draw_state: init_wgpu(&painter),
+            draw_state: init_wgpu(&painter, test_pane),
             painter,
             need_repaint: true,
             have_frame: Rc::new(Cell::new(true)),
@@ -1028,7 +1028,7 @@ fn draw_chromaticity_diagram(ui: &mut Ui, ds: &mut DrawState, primaries: Primari
     image.ui(ui);
 }
 
-fn init_wgpu(painter: &Painter) -> DrawState {
+fn init_wgpu(painter: &Painter, test_pane: &TestPane) -> DrawState {
     let renderer = painter.render_state().unwrap();
     let horseshoe_module = renderer
         .device
@@ -1118,10 +1118,17 @@ fn init_wgpu(painter: &Painter) -> DrawState {
             cache: None,
         });
     let limits = renderer.device.limits();
+    let mut config = ControlPaneConfig::default();
+    for tf in NamedTransferFunction::variants() {
+        if test_pane.caps.tf.contains(&tf.wayland()) {
+            config.tf = TransferFunction::Named(tf);
+            break;
+        }
+    }
     DrawState {
         renderer,
         max_size: limits.max_texture_dimension_2d,
-        config: Default::default(),
+        config,
         cie_diagram: None,
         horseshoe_pipeline,
         triangle_pipeline,
