@@ -365,6 +365,7 @@ impl From<NamedTransferFunction> for WidgetText {
             NamedTransferFunction::Log100 => "log_100",
             NamedTransferFunction::Log316 => "log_316",
             NamedTransferFunction::St428 => "st428",
+            NamedTransferFunction::CompoundPower24 => "compound_power_2_4",
         };
         txt.into()
     }

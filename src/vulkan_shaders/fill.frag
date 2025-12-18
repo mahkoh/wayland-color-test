@@ -12,6 +12,7 @@
 #define TF_LOG316 9
 #define TF_ST428 10
 #define TF_POW 11
+#define TF_COMPOUND_POWER_2_4 12
 
 vec3 inv_eotf_bt1886(Data data, vec3 c) {
 	c = clamp(c, 0.0, 1.0);
@@ -60,6 +61,14 @@ vec3 inv_eotf_st428(vec3 c) {
 	return pow(vec3(48.0) * c / vec3(52.37), vec3(1.0 / 2.6));
 }
 
+vec3 inv_eotf_compound_power_2_4(vec3 c) {
+	return mix(
+		vec3(12.92) * c,
+		vec3(1.055) * pow(c, vec3(1.0 / 2.4)) - vec3(0.055),
+		greaterThanEqual(c, vec3(0.0031308))
+	);
+}
+
 vec3 apply_inv_eotf(Data data, vec3 c) {
 	switch (data.eotf) {
 		case TF_LINEAR: return c;
@@ -72,6 +81,7 @@ vec3 apply_inv_eotf(Data data, vec3 c) {
 		case TF_LOG316: return inv_eotf_log316(c);
 		case TF_ST428: return inv_eotf_st428(c);
 		case TF_POW: return sign(c) * pow(abs(c), vec3(data.eotf_arg1));
+		case TF_COMPOUND_POWER_2_4: return inv_eotf_compound_power_2_4(c);
 		default: return c;
 	}
 }

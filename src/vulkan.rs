@@ -742,6 +742,7 @@ impl VulkanSurface {
                 NamedTransferFunction::Log100 => 8,
                 NamedTransferFunction::Log316 => 9,
                 NamedTransferFunction::St428 => 10,
+                NamedTransferFunction::CompoundPower24 => 12,
             },
             TransferFunction::Pow => 11,
         };

@@ -190,7 +190,7 @@ impl TestPane {
         let wl_subcompositor: WlSubcompositor = singletons.get(1, 1);
         let xdg_wm_base: XdgWmBase = singletons.get(1, 1);
         proxy::set_event_handler(&xdg_wm_base, XdgWmBase::on_ping(|p, serial| p.pong(serial)));
-        let wp_color_manager_v1: WpColorManagerV1 = singletons.get(1, 1);
+        let wp_color_manager_v1: WpColorManagerV1 = singletons.get(1, 2);
         let supported_features = RefCell::new(HashSet::new());
         let supported_tf = RefCell::new(HashSet::new());
         let supported_primaries = RefCell::new(HashSet::new());
@@ -408,7 +408,16 @@ impl TestPane {
                             self.0.destroy();
                         }
 
-                        fn ready(&self, slf: &WpImageDescriptionV1Ref, _identity: u32) {
+                        fn ready(&self, slf: &WpImageDescriptionV1Ref, identity: u32) {
+                            self.ready2(slf, 0, identity);
+                        }
+
+                        fn ready2(
+                            &self,
+                            slf: &WpImageDescriptionV1Ref,
+                            _identity_hi: u32,
+                            _identity_lo: u32,
+                        ) {
                             let m = &mut *self.1.mutable.borrow_mut();
                             m.pending_description = None;
                             self.1.create_description_error_message.set(Some(None));
@@ -573,7 +582,11 @@ impl State {
                 self.0.destroy();
             }
 
-            fn ready(&self, _slf: &WpImageDescriptionV1Ref, _identity: u32) {
+            fn ready(&self, slf: &WpImageDescriptionV1Ref, identity: u32) {
+                self.ready2(slf, 0, identity);
+            }
+
+            fn ready2(&self, _slf: &WpImageDescriptionV1Ref, _identity_hi: u32, _identity_lo: u32) {
                 struct Eh {
                     desc: WpImageDescriptionV1,
                     info: WpImageDescriptionInfoV1,
@@ -699,6 +712,9 @@ impl State {
                                 NamedTransferFunction::St2084Pq
                             }
                             WpColorManagerV1TransferFunction::ST428 => NamedTransferFunction::St428,
+                            WpColorManagerV1TransferFunction::COMPOUND_POWER_2_4 => {
+                                NamedTransferFunction::CompoundPower24
+                            }
                             _ => {
                                 self.error(format!("unsupported transfer function {tf:?}"));
                                 return;
@@ -771,6 +787,15 @@ impl XdgToplevelEventHandler for Rc<State> {
 
 impl WpColorManagementSurfaceFeedbackV1EventHandler for Rc<State> {
     fn preferred_changed(&self, _slf: &WpColorManagementSurfaceFeedbackV1Ref, _identity: u32) {
+        self.get_feedback();
+    }
+
+    fn preferred_changed2(
+        &self,
+        _slf: &WpColorManagementSurfaceFeedbackV1Ref,
+        _identity_hi: u32,
+        _identity_lo: u32,
+    ) {
         self.get_feedback();
     }
 }
