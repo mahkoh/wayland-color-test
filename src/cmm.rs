@@ -46,6 +46,7 @@ pub enum NamedTransferFunction {
     Log100,
     Log316,
     St428,
+    CompoundPower24,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Linearize)]
@@ -74,6 +75,9 @@ impl NamedTransferFunction {
             NamedTransferFunction::Log100 => WpColorManagerV1TransferFunction::LOG_100,
             NamedTransferFunction::Log316 => WpColorManagerV1TransferFunction::LOG_316,
             NamedTransferFunction::St428 => WpColorManagerV1TransferFunction::ST428,
+            NamedTransferFunction::CompoundPower24 => {
+                WpColorManagerV1TransferFunction::COMPOUND_POWER_2_4
+            }
         }
     }
 }
