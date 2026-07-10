@@ -530,7 +530,7 @@ impl VulkanSurface {
             let create_info = SwapchainCreateInfoKHR::default()
                 .surface(self.surface)
                 .pre_transform(SurfaceTransformFlagsKHR::IDENTITY)
-                .composite_alpha(CompositeAlphaFlagsKHR::PRE_MULTIPLIED)
+                .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
                 .image_extent(Extent2D { width, height })
                 .min_image_count(3)
                 .image_format(Format::R16G16B16A16_SFLOAT)
