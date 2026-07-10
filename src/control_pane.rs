@@ -378,6 +378,7 @@ pub struct ControlPaneConfig {
     // settings
     max_lumen: f32,
     max_chroma: f32,
+    pub show_cursor: bool,
 
     // color description
     cd_type: ColorDescriptionType,
@@ -420,6 +421,7 @@ impl Default for ControlPaneConfig {
             view: Default::default(),
             max_lumen: 1000.0,
             max_chroma: 0.5,
+            show_cursor: true,
             cd_type: ColorDescriptionType::None,
             named_primaries: NamedPrimaries::Srgb,
             use_custom_primaries: false,
@@ -774,6 +776,7 @@ fn draw_settings(ui: &mut Ui, ds: &mut DrawState) {
         .prefix("Max chroma: ")
         .drag_value_speed(0.1)
         .ui(ui);
+    ui.checkbox(&mut config.show_cursor, "Show cursor");
 }
 
 fn draw_scenes(ui: &mut Ui, ds: &mut DrawState) {

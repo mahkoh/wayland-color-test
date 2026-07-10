@@ -28,10 +28,18 @@ use {
                     WpImageDescriptionV1EventHandler, WpImageDescriptionV1Ref,
                 },
             },
+            cursor_shape_v1::{
+                wp_cursor_shape_device_v1::{WpCursorShapeDeviceV1, WpCursorShapeDeviceV1Shape},
+                wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+            },
             wayland::{
-                wl_compositor::WlCompositor, wl_display::WlDisplay,
-                wl_subcompositor::WlSubcompositor, wl_subsurface::WlSubsurface,
-                wl_surface::WlSurface,
+                wl_compositor::WlCompositor,
+                wl_display::WlDisplay,
+                wl_pointer::{WlPointer, WlPointerEventHandler, WlPointerRef},
+                wl_seat::{WlSeat, WlSeatCapability, WlSeatEventHandler, WlSeatRef},
+                wl_subcompositor::WlSubcompositor,
+                wl_subsurface::WlSubsurface,
+                wl_surface::{WlSurface, WlSurfaceRef},
             },
             xdg_shell::{
                 xdg_surface::{XdgSurface, XdgSurfaceEventHandler, XdgSurfaceRef},
@@ -56,7 +64,7 @@ use {
         rc::Rc,
     },
     wl_client::{
-        Libwayland, QueueOwner, QueueWithData,
+        Fixed, Libwayland, QueueOwner, QueueWithData,
         proxy::{self},
     },
 };
@@ -66,6 +74,7 @@ pub struct TestPane {
     pub queue: QueueWithData<ControlPaneConfig>,
     pub caps: Rc<Capablities>,
     state: Rc<State>,
+    _seat: Option<Rc<Seat>>,
     _display_handle: OwnedDisplayHandle,
 }
 
@@ -79,6 +88,7 @@ struct State {
     caps: Rc<Capablities>,
     _xdg_wm_base: XdgWmBase,
     _wl_compositor: WlCompositor,
+    wp_cursor_shape_manager_v1: WpCursorShapeManagerV1,
     wl_subcompositor: WlSubcompositor,
     wp_color_manager_v1: WpColorManagerV1,
     wl_surface: WlSurface,
@@ -94,6 +104,18 @@ struct State {
     create_description_error_message: Cell<Option<Option<String>>>,
     preferred_description_error_message: Cell<Option<Option<String>>>,
     preferred_description_data: Cell<Option<DescriptionData>>,
+}
+
+struct Seat {
+    state: Rc<State>,
+    wl_seat: WlSeat,
+    pointer: RefCell<Option<Rc<Pointer>>>,
+}
+
+struct Pointer {
+    seat: Rc<Seat>,
+    wl_pointer: WlPointer,
+    wp_cursor_shape_device_v1: WpCursorShapeDeviceV1,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -189,6 +211,7 @@ impl TestPane {
         let singletons = get_singletons(&display);
         let wl_compositor: WlCompositor = singletons.get(1, 4);
         let wl_subcompositor: WlSubcompositor = singletons.get(1, 1);
+        let wp_cursor_shape_manager_v1: WpCursorShapeManagerV1 = singletons.get(1, 1);
         let xdg_wm_base: XdgWmBase = singletons.get(1, 1);
         proxy::set_event_handler(
             &xdg_wm_base,
@@ -238,6 +261,7 @@ impl TestPane {
             caps: caps.clone(),
             _xdg_wm_base: xdg_wm_base,
             _wl_compositor: wl_compositor,
+            wp_cursor_shape_manager_v1,
             wl_subcompositor,
             wp_color_manager_v1,
             wl_surface,
@@ -272,11 +296,22 @@ impl TestPane {
             &state.wp_color_management_surface_feedback_v1,
             state.clone(),
         );
+        let mut seat = None;
+        if let Some(wl_seat) = singletons.get_opt(3, 11) {
+            let s = Rc::new(Seat {
+                state: state.clone(),
+                wl_seat,
+                pointer: Default::default(),
+            });
+            proxy::set_event_handler_local(&s.wl_seat, s.clone());
+            seat = Some(s);
+        }
         TestPane {
             _queue_owner: queue_owner,
             queue,
             caps,
             state,
+            _seat: seat,
             _display_handle: display_handle,
         }
     }
@@ -804,6 +839,65 @@ impl State {
             .wp_color_management_surface_feedback_v1
             .get_preferred_parametric();
         proxy::set_event_handler_local(&desc.clone(), Eh(desc, self.clone()))
+    }
+}
+
+impl WlSeatEventHandler for Rc<Seat> {
+    type Data = ControlPaneConfig;
+
+    fn capabilities(
+        &self,
+        _data: &mut Self::Data,
+        _slf: &WlSeatRef,
+        capabilities: WlSeatCapability,
+    ) {
+        if capabilities.contains(WlSeatCapability::POINTER) {
+            let pointer = &mut *self.pointer.borrow_mut();
+            if pointer.is_none() {
+                let wl_pointer = self.wl_seat.get_pointer();
+                let wp_cursor_shape_device_v1 = self
+                    .state
+                    .wp_cursor_shape_manager_v1
+                    .get_pointer(&wl_pointer);
+                let v = Rc::new(Pointer {
+                    seat: self.clone(),
+                    wl_pointer,
+                    wp_cursor_shape_device_v1,
+                });
+                proxy::set_event_handler_local(&v.wl_pointer, v.clone());
+                *pointer = Some(v);
+            }
+        } else {
+            if let Some(v) = self.pointer.take() {
+                v.wp_cursor_shape_device_v1.destroy();
+                v.wl_pointer.release();
+            }
+        }
+    }
+}
+
+impl WlPointerEventHandler for Rc<Pointer> {
+    type Data = ControlPaneConfig;
+
+    fn enter(
+        &self,
+        data: &mut Self::Data,
+        slf: &WlPointerRef,
+        serial: u32,
+        surface: Option<&WlSurfaceRef>,
+        _surface_x: Fixed,
+        _surface_y: Fixed,
+    ) {
+        if let Some(s) = surface
+            && proxy::id(s) == proxy::id(&*self.seat.state.wl_surface)
+        {
+            if data.show_cursor {
+                self.wp_cursor_shape_device_v1
+                    .set_shape(serial, WpCursorShapeDeviceV1Shape::DEFAULT);
+            } else {
+                slf.set_cursor(serial, None, 0, 0);
+            }
+        }
     }
 }
 
