@@ -1,5 +1,8 @@
 use {
-    crate::{control_pane::ControlPane, test_pane::TestPane},
+    crate::{
+        control_pane::{ControlPane, ControlPaneConfig},
+        test_pane::TestPane,
+    },
     async_io::{Async, Timer},
     egui_winit::winit::{
         application::ApplicationHandler,
@@ -35,15 +38,15 @@ async fn async_main() {
     let mut event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = WinitApp {
-        test_pane: TestPane::new(&event_loop).await,
+        test_pane: TestPane::new(&event_loop, &mut ControlPaneConfig::default()).await,
         control_pane: None,
     };
     let fd = event_loop.as_fd().try_clone_to_owned().unwrap();
     let fd = Async::new_nonblocking(fd).unwrap();
     loop {
         event_loop.pump_app_events(Some(Duration::ZERO), &mut app);
-        app.test_pane.dispatch();
         let control_pane = app.control_pane.as_mut().unwrap();
+        app.test_pane.dispatch(&mut control_pane.draw_state.config);
         if let Some(error_message) = app.test_pane.create_description_error_message() {
             control_pane.draw_state.create_description_error_message = error_message;
             control_pane.need_repaint = true;
