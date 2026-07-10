@@ -10,12 +10,13 @@ use {
             Color, DescriptionData, TestColorDescription, TestPane, TestPrimaries, TestScene,
         },
     },
-    bytemuck::{bytes_of, NoUninit},
+    bytemuck::{NoUninit, bytes_of},
     egui::{
-        vec2, CentralPanel, Color32, ComboBox, Context, DragValue, FullOutput, Grid, Image,
-        RawInput, Slider, TextureId, Ui, ViewportBuilder, ViewportInfo, Widget, WidgetText,
+        CentralPanel, Color32, ComboBox, Context, DragValue, FullOutput, Grid, Image, RawInput,
+        Slider, TextureId, Ui, ViewportBuilder, ViewportInfo, Widget, WidgetText, vec2,
     },
     egui_wgpu::{
+        RenderState, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew,
         wgpu::{
             Backends, BlendComponent, BlendState, ColorTargetState, DeviceDescriptor, Extent3d,
             Features, FilterMode, FragmentState, IndexFormat, InstanceDescriptor, Limits, LoadOp,
@@ -26,7 +27,6 @@ use {
             TextureUsages, TextureView, TextureViewDescriptor, VertexState,
         },
         winit::Painter,
-        RenderState, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew,
     },
     egui_winit::winit::{
         event::WindowEvent,
@@ -62,7 +62,7 @@ pub struct ControlPane {
 pub struct DrawState {
     renderer: RenderState,
     max_size: u32,
-    config: ControlPaneConfig,
+    pub config: ControlPaneConfig,
     cie_diagram: Option<CieDiagram>,
     horseshoe_pipeline: RenderPipeline,
     triangle_pipeline: RenderPipeline,
@@ -230,6 +230,7 @@ impl ControlPane {
             }
             WindowEvent::RedrawRequested => {
                 self.have_frame.set(true);
+                self.need_repaint = true;
             }
             WindowEvent::CloseRequested => {
                 std::process::exit(0);
@@ -371,12 +372,13 @@ impl From<NamedTransferFunction> for WidgetText {
     }
 }
 
-struct ControlPaneConfig {
+pub struct ControlPaneConfig {
     view: View,
 
     // settings
     max_lumen: f32,
     max_chroma: f32,
+    pub show_cursor: bool,
 
     // color description
     cd_type: ColorDescriptionType,
@@ -419,6 +421,7 @@ impl Default for ControlPaneConfig {
             view: Default::default(),
             max_lumen: 1000.0,
             max_chroma: 0.5,
+            show_cursor: true,
             cd_type: ColorDescriptionType::None,
             named_primaries: NamedPrimaries::Srgb,
             use_custom_primaries: false,
@@ -773,6 +776,7 @@ fn draw_settings(ui: &mut Ui, ds: &mut DrawState) {
         .prefix("Max chroma: ")
         .drag_value_speed(0.1)
         .ui(ui);
+    ui.checkbox(&mut config.show_cursor, "Show cursor");
 }
 
 fn draw_scenes(ui: &mut Ui, ds: &mut DrawState) {
@@ -895,11 +899,11 @@ fn draw_chromaticity_diagram(ui: &mut Ui, ds: &mut DrawState, primaries: Primari
     let available = available.x.min(available.y).round();
     let size = (ui.pixels_per_point() * available).round() as u32;
     let size = size.min(ds.max_size);
-    if let Some(cie) = &mut ds.cie_diagram {
-        if cie.size != size {
-            ds.renderer.renderer.write().free_texture(&cie.id);
-            ds.cie_diagram = None;
-        }
+    if let Some(cie) = &mut ds.cie_diagram
+        && cie.size != size
+    {
+        ds.renderer.renderer.write().free_texture(&cie.id);
+        ds.cie_diagram = None;
     }
     let cie = match &mut ds.cie_diagram {
         Some(c) => c,
@@ -1014,7 +1018,7 @@ fn draw_chromaticity_diagram(ui: &mut Ui, ds: &mut DrawState, primaries: Primari
         b: [f32; 2],
         wp: [f32; 2],
     }
-    let map = |f: (F64, F64)| [f.0 .0 as f32, f.1 .0 as f32];
+    let map = |f: (F64, F64)| [f.0.0 as f32, f.1.0 as f32];
     let data = Data {
         r: map(primaries.r),
         g: map(primaries.g),

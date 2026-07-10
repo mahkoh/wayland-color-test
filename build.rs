@@ -1,5 +1,5 @@
 use {
-    anyhow::{anyhow, bail, Context},
+    anyhow::{Context, anyhow, bail},
     shaderc::{CompileOptions, ResolvedInclude},
     std::{
         env,
@@ -12,7 +12,9 @@ use {
 const ROOT: &str = "src/vulkan_shaders";
 
 fn main() -> anyhow::Result<()> {
-    wl_client_builder::Builder::default().build()?;
+    wl_client_builder::Builder::default()
+        .with_mutable_data(true)
+        .build()?;
 
     println!("cargo:rerun-if-changed={}", ROOT);
     compile_simple("fill.frag")?;

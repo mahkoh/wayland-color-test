@@ -1,9 +1,10 @@
 use {
     crate::{
         cmm::{
-            matrix_from_lms, ColorMatrix, Lms, Local, Luminance, NamedPrimaries,
-            NamedTransferFunction, Primaries, TransferFunction, TransferFunctionWithArgs,
+            ColorMatrix, Lms, Local, Luminance, NamedPrimaries, NamedTransferFunction, Primaries,
+            TransferFunction, TransferFunctionWithArgs, matrix_from_lms,
         },
+        control_pane::ControlPaneConfig,
         ordered_float::F64,
         protocols::{
             color_management_v1::{
@@ -27,10 +28,18 @@ use {
                     WpImageDescriptionV1EventHandler, WpImageDescriptionV1Ref,
                 },
             },
+            cursor_shape_v1::{
+                wp_cursor_shape_device_v1::{WpCursorShapeDeviceV1, WpCursorShapeDeviceV1Shape},
+                wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+            },
             wayland::{
-                wl_compositor::WlCompositor, wl_display::WlDisplay,
-                wl_subcompositor::WlSubcompositor, wl_subsurface::WlSubsurface,
-                wl_surface::WlSurface,
+                wl_compositor::WlCompositor,
+                wl_display::WlDisplay,
+                wl_pointer::{WlPointer, WlPointerEventHandler, WlPointerRef},
+                wl_seat::{WlSeat, WlSeatCapability, WlSeatEventHandler, WlSeatRef},
+                wl_subcompositor::WlSubcompositor,
+                wl_subsurface::WlSubsurface,
+                wl_surface::{WlSurface, WlSurfaceRef},
             },
             xdg_shell::{
                 xdg_surface::{XdgSurface, XdgSurfaceEventHandler, XdgSurfaceRef},
@@ -51,20 +60,21 @@ use {
         cell::{Cell, RefCell},
         collections::HashSet,
         f32::consts::PI,
-        mem,
         ptr::NonNull,
         rc::Rc,
     },
     wl_client::{
+        Fixed, Libwayland, QueueOwner, QueueWithData,
         proxy::{self},
-        Libwayland, QueueOwner,
     },
 };
 
 pub struct TestPane {
-    pub queue: QueueOwner,
+    pub _queue_owner: QueueOwner,
+    pub queue: QueueWithData<ControlPaneConfig>,
     pub caps: Rc<Capablities>,
     state: Rc<State>,
+    _seat: Option<Rc<Seat>>,
     _display_handle: OwnedDisplayHandle,
 }
 
@@ -78,6 +88,7 @@ struct State {
     caps: Rc<Capablities>,
     _xdg_wm_base: XdgWmBase,
     _wl_compositor: WlCompositor,
+    wp_cursor_shape_manager_v1: WpCursorShapeManagerV1,
     wl_subcompositor: WlSubcompositor,
     wp_color_manager_v1: WpColorManagerV1,
     wl_surface: WlSurface,
@@ -93,6 +104,18 @@ struct State {
     create_description_error_message: Cell<Option<Option<String>>>,
     preferred_description_error_message: Cell<Option<Option<String>>>,
     preferred_description_data: Cell<Option<DescriptionData>>,
+}
+
+struct Seat {
+    state: Rc<State>,
+    wl_seat: WlSeat,
+    pointer: RefCell<Option<Rc<Pointer>>>,
+}
+
+struct Pointer {
+    seat: Rc<Seat>,
+    wl_pointer: WlPointer,
+    wp_cursor_shape_device_v1: WpCursorShapeDeviceV1,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -169,7 +192,7 @@ impl Color {
 }
 
 impl TestPane {
-    pub async fn new<T>(event_loop: &EventLoop<T>) -> Self {
+    pub async fn new<T>(event_loop: &EventLoop<T>, config: &mut ControlPaneConfig) -> Self {
         let display_handle = event_loop.owned_display_handle();
         let RawDisplayHandle::Wayland(wl) = *display_handle.display_handle().unwrap().as_ref()
         else {
@@ -183,13 +206,17 @@ impl TestPane {
                 .wrap_borrowed_pointer(wl_display)
                 .unwrap()
         };
-        let queue = con.create_local_queue(c"color-test");
+        let (queue_owner, queue) = con.create_local_queue_with_data(c"color-test");
         let display = queue.display::<WlDisplay>();
         let singletons = get_singletons(&display);
         let wl_compositor: WlCompositor = singletons.get(1, 4);
         let wl_subcompositor: WlSubcompositor = singletons.get(1, 1);
+        let wp_cursor_shape_manager_v1: WpCursorShapeManagerV1 = singletons.get(1, 1);
         let xdg_wm_base: XdgWmBase = singletons.get(1, 1);
-        proxy::set_event_handler(&xdg_wm_base, XdgWmBase::on_ping(|p, serial| p.pong(serial)));
+        proxy::set_event_handler(
+            &xdg_wm_base,
+            XdgWmBase::on_ping(|_: &mut ControlPaneConfig, p, serial| p.pong(serial)),
+        );
         let wp_color_manager_v1: WpColorManagerV1 = singletons.get(1, 2);
         let supported_features = RefCell::new(HashSet::new());
         let supported_tf = RefCell::new(HashSet::new());
@@ -204,7 +231,7 @@ impl TestPane {
                         primaries: &supported_primaries,
                     },
                 );
-                queue.dispatch_roundtrip_async().await.unwrap();
+                queue.dispatch_roundtrip_async(config).await.unwrap();
             })
             .await;
         let wl_surface = wl_compositor.create_surface();
@@ -234,6 +261,7 @@ impl TestPane {
             caps: caps.clone(),
             _xdg_wm_base: xdg_wm_base,
             _wl_compositor: wl_compositor,
+            wp_cursor_shape_manager_v1,
             wl_subcompositor,
             wp_color_manager_v1,
             wl_surface,
@@ -268,10 +296,22 @@ impl TestPane {
             &state.wp_color_management_surface_feedback_v1,
             state.clone(),
         );
+        let mut seat = None;
+        if let Some(wl_seat) = singletons.get_opt(3, 11) {
+            let s = Rc::new(Seat {
+                state: state.clone(),
+                wl_seat,
+                pointer: Default::default(),
+            });
+            proxy::set_event_handler_local(&s.wl_seat, s.clone());
+            seat = Some(s);
+        }
         TestPane {
+            _queue_owner: queue_owner,
             queue,
             caps,
             state,
+            _seat: seat,
             _display_handle: display_handle,
         }
     }
@@ -394,8 +434,11 @@ impl TestPane {
                     let desc = c.create();
                     struct Eh(WpImageDescriptionV1, Rc<State>);
                     impl WpImageDescriptionV1EventHandler for Eh {
+                        type Data = ControlPaneConfig;
+
                         fn failed(
                             &self,
+                            _data: &mut Self::Data,
                             _slf: &WpImageDescriptionV1Ref,
                             _cause: WpImageDescriptionV1Cause,
                             msg: &str,
@@ -408,12 +451,18 @@ impl TestPane {
                             self.0.destroy();
                         }
 
-                        fn ready(&self, slf: &WpImageDescriptionV1Ref, identity: u32) {
-                            self.ready2(slf, 0, identity);
+                        fn ready(
+                            &self,
+                            data: &mut Self::Data,
+                            slf: &WpImageDescriptionV1Ref,
+                            identity: u32,
+                        ) {
+                            self.ready2(data, slf, 0, identity);
                         }
 
                         fn ready2(
                             &self,
+                            _data: &mut Self::Data,
                             slf: &WpImageDescriptionV1Ref,
                             _identity_hi: u32,
                             _identity_lo: u32,
@@ -463,8 +512,8 @@ impl TestPane {
         self.state.render_frame(m);
     }
 
-    pub fn dispatch(&self) {
-        self.queue.dispatch_pending().unwrap();
+    pub fn dispatch(&self, data: &mut ControlPaneConfig) {
+        self.queue.dispatch_pending(data).unwrap();
     }
 
     pub async fn wait_for_events(&self) {
@@ -479,16 +528,29 @@ struct ColorManagerEventHandler<'a> {
 }
 
 impl WpColorManagerV1EventHandler for ColorManagerEventHandler<'_> {
-    fn supported_feature(&self, _slf: &WpColorManagerV1Ref, feature: WpColorManagerV1Feature) {
+    type Data = ControlPaneConfig;
+
+    fn supported_feature(
+        &self,
+        _data: &mut Self::Data,
+        _slf: &WpColorManagerV1Ref,
+        feature: WpColorManagerV1Feature,
+    ) {
         self.features.borrow_mut().insert(feature);
     }
 
-    fn supported_tf_named(&self, _slf: &WpColorManagerV1Ref, tf: WpColorManagerV1TransferFunction) {
+    fn supported_tf_named(
+        &self,
+        _data: &mut Self::Data,
+        _slf: &WpColorManagerV1Ref,
+        tf: WpColorManagerV1TransferFunction,
+    ) {
         self.tf.borrow_mut().insert(tf);
     }
 
     fn supported_primaries_named(
         &self,
+        _data: &mut Self::Data,
         _slf: &WpColorManagerV1Ref,
         primaries: WpColorManagerV1Primaries,
     ) {
@@ -570,8 +632,11 @@ impl State {
 
         struct Eh(WpImageDescriptionV1, Rc<State>);
         impl WpImageDescriptionV1EventHandler for Eh {
+            type Data = ControlPaneConfig;
+
             fn failed(
                 &self,
+                _data: &mut Self::Data,
                 _slf: &WpImageDescriptionV1Ref,
                 _cause: WpImageDescriptionV1Cause,
                 msg: &str,
@@ -582,11 +647,17 @@ impl State {
                 self.0.destroy();
             }
 
-            fn ready(&self, slf: &WpImageDescriptionV1Ref, identity: u32) {
-                self.ready2(slf, 0, identity);
+            fn ready(&self, data: &mut Self::Data, slf: &WpImageDescriptionV1Ref, identity: u32) {
+                self.ready2(data, slf, 0, identity);
             }
 
-            fn ready2(&self, _slf: &WpImageDescriptionV1Ref, _identity_hi: u32, _identity_lo: u32) {
+            fn ready2(
+                &self,
+                _data: &mut Self::Data,
+                _slf: &WpImageDescriptionV1Ref,
+                _identity_hi: u32,
+                _identity_lo: u32,
+            ) {
                 struct Eh {
                     desc: WpImageDescriptionV1,
                     info: WpImageDescriptionInfoV1,
@@ -606,7 +677,9 @@ impl State {
                     }
                 }
                 impl WpImageDescriptionInfoV1EventHandler for Eh {
-                    fn done(&self, _slf: &WpImageDescriptionInfoV1Ref) {
+                    type Data = ControlPaneConfig;
+
+                    fn done(&self, _data: &mut Self::Data, _slf: &WpImageDescriptionInfoV1Ref) {
                         let Some(primaries) = self.primaries.take() else {
                             self.error("compositor did not send any primaries".to_string());
                             return;
@@ -630,6 +703,7 @@ impl State {
 
                     fn primaries(
                         &self,
+                        _data: &mut Self::Data,
                         _slf: &WpImageDescriptionInfoV1Ref,
                         r_x: i32,
                         r_y: i32,
@@ -652,6 +726,7 @@ impl State {
 
                     fn primaries_named(
                         &self,
+                        _data: &mut Self::Data,
                         _slf: &WpImageDescriptionInfoV1Ref,
                         primaries: WpColorManagerV1Primaries,
                     ) {
@@ -674,13 +749,19 @@ impl State {
                         self.primaries.set(Some(TestPrimaries::Named(primaries)));
                     }
 
-                    fn tf_power(&self, _slf: &WpImageDescriptionInfoV1Ref, eexp: u32) {
+                    fn tf_power(
+                        &self,
+                        _data: &mut Self::Data,
+                        _slf: &WpImageDescriptionInfoV1Ref,
+                        eexp: u32,
+                    ) {
                         self.tf.set(Some(TransferFunction::Pow));
                         self.tf_power.set(eexp as f32 / 10_000.0);
                     }
 
                     fn tf_named(
                         &self,
+                        _data: &mut Self::Data,
                         _slf: &WpImageDescriptionInfoV1Ref,
                         tf: WpColorManagerV1TransferFunction,
                     ) {
@@ -725,6 +806,7 @@ impl State {
 
                     fn luminances(
                         &self,
+                        _data: &mut Self::Data,
                         _slf: &WpImageDescriptionInfoV1Ref,
                         min_lum: u32,
                         max_lum: u32,
@@ -760,15 +842,87 @@ impl State {
     }
 }
 
+impl WlSeatEventHandler for Rc<Seat> {
+    type Data = ControlPaneConfig;
+
+    fn capabilities(
+        &self,
+        _data: &mut Self::Data,
+        _slf: &WlSeatRef,
+        capabilities: WlSeatCapability,
+    ) {
+        if capabilities.contains(WlSeatCapability::POINTER) {
+            let pointer = &mut *self.pointer.borrow_mut();
+            if pointer.is_none() {
+                let wl_pointer = self.wl_seat.get_pointer();
+                let wp_cursor_shape_device_v1 = self
+                    .state
+                    .wp_cursor_shape_manager_v1
+                    .get_pointer(&wl_pointer);
+                let v = Rc::new(Pointer {
+                    seat: self.clone(),
+                    wl_pointer,
+                    wp_cursor_shape_device_v1,
+                });
+                proxy::set_event_handler_local(&v.wl_pointer, v.clone());
+                *pointer = Some(v);
+            }
+        } else {
+            if let Some(v) = self.pointer.take() {
+                v.wp_cursor_shape_device_v1.destroy();
+                v.wl_pointer.release();
+            }
+        }
+    }
+}
+
+impl WlPointerEventHandler for Rc<Pointer> {
+    type Data = ControlPaneConfig;
+
+    fn enter(
+        &self,
+        data: &mut Self::Data,
+        slf: &WlPointerRef,
+        serial: u32,
+        surface: Option<&WlSurfaceRef>,
+        _surface_x: Fixed,
+        _surface_y: Fixed,
+    ) {
+        if let Some(s) = surface
+            && proxy::id(s) == proxy::id(&*self.seat.state.wl_surface)
+        {
+            if data.show_cursor {
+                self.wp_cursor_shape_device_v1
+                    .set_shape(serial, WpCursorShapeDeviceV1Shape::DEFAULT);
+            } else {
+                slf.set_cursor(serial, None, 0, 0);
+            }
+        }
+    }
+}
+
 impl XdgSurfaceEventHandler for Rc<State> {
-    fn configure(&self, _slf: &XdgSurfaceRef, serial: u32) {
+    type Data = ControlPaneConfig;
+
+    fn configure(&self, _data: &mut Self::Data, _slf: &XdgSurfaceRef, serial: u32) {
         self.xdg_surface.ack_configure(serial);
-        self.render_frame(&mut self.mutable.borrow_mut());
+        let m = &mut *self.mutable.borrow_mut();
+        m.need_render = true;
+        self.render_frame(m);
     }
 }
 
 impl XdgToplevelEventHandler for Rc<State> {
-    fn configure(&self, _slf: &XdgToplevelRef, mut width: i32, mut height: i32, _states: &[u8]) {
+    type Data = ControlPaneConfig;
+
+    fn configure(
+        &self,
+        _data: &mut Self::Data,
+        _slf: &XdgToplevelRef,
+        mut width: i32,
+        mut height: i32,
+        _states: &[u8],
+    ) {
         if width <= 0 {
             width = 800;
         }
@@ -776,22 +930,30 @@ impl XdgToplevelEventHandler for Rc<State> {
             height = 600;
         }
         let m = &mut *self.mutable.borrow_mut();
-        m.need_render |= mem::replace(&mut m.width, width) != width;
-        m.need_render |= mem::replace(&mut m.height, height) != height;
+        m.width = width;
+        m.height = height;
     }
 
-    fn close(&self, _slf: &XdgToplevelRef) {
+    fn close(&self, _data: &mut Self::Data, _slf: &XdgToplevelRef) {
         std::process::exit(0);
     }
 }
 
 impl WpColorManagementSurfaceFeedbackV1EventHandler for Rc<State> {
-    fn preferred_changed(&self, _slf: &WpColorManagementSurfaceFeedbackV1Ref, _identity: u32) {
+    type Data = ControlPaneConfig;
+
+    fn preferred_changed(
+        &self,
+        _data: &mut Self::Data,
+        _slf: &WpColorManagementSurfaceFeedbackV1Ref,
+        _identity: u32,
+    ) {
         self.get_feedback();
     }
 
     fn preferred_changed2(
         &self,
+        _data: &mut Self::Data,
         _slf: &WpColorManagementSurfaceFeedbackV1Ref,
         _identity_hi: u32,
         _identity_lo: u32,

@@ -4,6 +4,7 @@ use {
         protocols::wayland::wl_surface::WlSurface,
     },
     ash::{
+        Device, Entry, Instance,
         ext::swapchain_maintenance1,
         khr::{surface, swapchain, wayland_surface},
         vk::{
@@ -14,31 +15,30 @@ use {
             CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
             CommandBufferUsageFlags, CommandPool, CommandPoolCreateInfo, CompositeAlphaFlagsKHR,
             DependencyInfo, DeviceCreateInfo, DeviceMemory, DeviceQueueCreateInfo, DynamicState,
-            Extent2D, Fence, FenceCreateInfo, Format, GraphicsPipelineCreateInfo, Image,
-            ImageAspectFlags, ImageLayout, ImageMemoryBarrier2, ImageSubresourceRange,
-            ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo,
-            PhysicalDevice, PhysicalDeviceSwapchainMaintenance1FeaturesEXT,
-            PhysicalDeviceVulkan12Features, PhysicalDeviceVulkan13Features, Pipeline,
-            PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState,
-            PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo,
-            PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-            PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
-            PipelineRasterizationStateCreateInfo, PipelineRenderingCreateInfo,
-            PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineStageFlags2,
-            PipelineTessellationStateCreateInfo, PipelineVertexInputStateCreateInfo,
-            PipelineViewportStateCreateInfo, PresentInfoKHR, PresentModeKHR, PrimitiveTopology,
-            PushConstantRange, Queue, Rect2D, RenderingAttachmentInfo, RenderingInfo,
-            SampleCountFlags, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo,
-            ShaderStageFlags, SharingMode, SubmitInfo, SurfaceFormatKHR, SurfaceKHR,
-            SurfaceTransformFlagsKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-            SwapchainPresentFenceInfoEXT, Viewport, WaylandSurfaceCreateInfoKHR,
             EXT_SURFACE_MAINTENANCE1_NAME, EXT_SWAPCHAIN_COLORSPACE_NAME,
-            EXT_SWAPCHAIN_MAINTENANCE1_NAME, KHR_GET_SURFACE_CAPABILITIES2_NAME, KHR_SURFACE_NAME,
-            KHR_SWAPCHAIN_NAME, KHR_WAYLAND_SURFACE_NAME,
+            EXT_SWAPCHAIN_MAINTENANCE1_NAME, Extent2D, Fence, FenceCreateInfo, Format,
+            GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageMemoryBarrier2,
+            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+            InstanceCreateInfo, KHR_GET_SURFACE_CAPABILITIES2_NAME, KHR_SURFACE_NAME,
+            KHR_SWAPCHAIN_NAME, KHR_WAYLAND_SURFACE_NAME, PhysicalDevice,
+            PhysicalDeviceSwapchainMaintenance1FeaturesEXT, PhysicalDeviceVulkan12Features,
+            PhysicalDeviceVulkan13Features, Pipeline, PipelineBindPoint, PipelineCache,
+            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateInfo,
+            PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+            PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+            PipelineRenderingCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
+            PipelineStageFlags2, PipelineTessellationStateCreateInfo,
+            PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PresentInfoKHR,
+            PresentModeKHR, PrimitiveTopology, PushConstantRange, Queue, Rect2D,
+            RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Semaphore,
+            SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags,
+            SharingMode, SubmitInfo, SurfaceFormatKHR, SurfaceKHR, SurfaceTransformFlagsKHR,
+            SwapchainCreateInfoKHR, SwapchainKHR, SwapchainPresentFenceInfoEXT, Viewport,
+            WaylandSurfaceCreateInfoKHR,
         },
-        Device, Entry, Instance,
     },
-    bytemuck::{bytes_of, NoUninit},
+    bytemuck::{NoUninit, bytes_of},
     gpu_alloc::{AllocationError, Config, GpuAllocator, MemoryBlock, Request, UsageFlags},
     gpu_alloc_ash::AshMemoryDevice,
     itertools::Itertools,
@@ -176,6 +176,7 @@ struct FillBuffer {
     device: Rc<VulkanDevice>,
 }
 
+#[derive(Copy, Clone)]
 pub enum Scene {
     Fill([f32; 4]),
     FillLeftRight([[f32; 4]; 2]),
@@ -511,12 +512,11 @@ impl VulkanSurface {
         if !recreate {
             recreate = self.suboptimal.get();
         }
-        if !recreate {
-            if let Some(sc) = &*sc {
-                if sc.width != width || sc.height != height {
-                    recreate = true;
-                }
-            }
+        if !recreate
+            && let Some(sc) = &*sc
+            && (sc.width != width || sc.height != height)
+        {
+            recreate = true;
         }
         if recreate {
             let old = sc.take();
@@ -531,7 +531,7 @@ impl VulkanSurface {
             let create_info = SwapchainCreateInfoKHR::default()
                 .surface(self.surface)
                 .pre_transform(SurfaceTransformFlagsKHR::IDENTITY)
-                .composite_alpha(CompositeAlphaFlagsKHR::PRE_MULTIPLIED)
+                .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
                 .image_extent(Extent2D { width, height })
                 .min_image_count(3)
                 .image_format(Format::R16G16B16A16_SFLOAT)
@@ -660,6 +660,23 @@ impl VulkanSurface {
     }
 
     pub fn render(
+        &self,
+        width: u32,
+        height: u32,
+        scene: Scene,
+        lms_to_local: ColorMatrix<Local, Lms>,
+        tf: TransferFunction,
+        tf_args: [f32; 4],
+    ) -> Result<(), Error> {
+        let mut need_render = true;
+        while need_render {
+            self.render_(width, height, scene, lms_to_local, tf, tf_args)?;
+            need_render = self.suboptimal.get();
+        }
+        Ok(())
+    }
+
+    fn render_(
         &self,
         width: u32,
         height: u32,

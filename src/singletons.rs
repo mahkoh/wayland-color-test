@@ -1,6 +1,7 @@
 use {
-    crate::protocols::wayland::{
-        wl_display::WlDisplay, wl_fixes::WlFixes, wl_registry::WlRegistry,
+    crate::{
+        control_pane::ControlPaneConfig,
+        protocols::wayland::{wl_display::WlDisplay, wl_fixes::WlFixes, wl_registry::WlRegistry},
     },
     std::{cell::RefCell, collections::HashMap},
     wl_client::{proxy, proxy::OwnedProxy},
@@ -55,18 +56,20 @@ impl Drop for Singletons {
 pub fn get_singletons(display: &WlDisplay) -> Singletons {
     let map = RefCell::new(HashMap::new());
 
-    let queue = proxy::queue(display);
+    let queue = proxy::queue(display).with_data();
     let wl_registry = display.get_registry();
 
     queue.dispatch_scope_blocking(|scope| {
         scope.set_event_handler_local(
             &wl_registry,
-            WlRegistry::on_global(|_, name, interface, version| {
+            WlRegistry::on_global(|_: &mut ControlPaneConfig, _, name, interface, version| {
                 map.borrow_mut()
                     .insert(interface.to_owned(), (name, version));
             }),
         );
-        queue.dispatch_roundtrip_blocking().unwrap();
+        queue
+            .dispatch_roundtrip_blocking(&mut ControlPaneConfig::default())
+            .unwrap();
     });
 
     Singletons {

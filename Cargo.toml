@@ -1,7 +1,7 @@
 [package]
 name = "wayland-color-test"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 egui = "0.31.1"
@@ -24,6 +24,6 @@ gpu-alloc-ash = "0.7.0"
 isnt = "0.1.0"
 
 [build-dependencies]
-wl-client-builder = "0.2.0"
+wl-client-builder = "0.2.1"
 anyhow = "1.0.98"
 shaderc = "0.9.1"
