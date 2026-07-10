@@ -176,6 +176,7 @@ struct FillBuffer {
     device: Rc<VulkanDevice>,
 }
 
+#[derive(Copy, Clone)]
 pub enum Scene {
     Fill([f32; 4]),
     FillLeftRight([[f32; 4]; 2]),
@@ -659,6 +660,23 @@ impl VulkanSurface {
     }
 
     pub fn render(
+        &self,
+        width: u32,
+        height: u32,
+        scene: Scene,
+        lms_to_local: ColorMatrix<Local, Lms>,
+        tf: TransferFunction,
+        tf_args: [f32; 4],
+    ) -> Result<(), Error> {
+        let mut need_render = true;
+        while need_render {
+            self.render_(width, height, scene, lms_to_local, tf, tf_args)?;
+            need_render = self.suboptimal.get();
+        }
+        Ok(())
+    }
+
+    fn render_(
         &self,
         width: u32,
         height: u32,
