@@ -1,8 +1,8 @@
 use {
     crate::{
         cmm::{
-            matrix_from_lms, ColorMatrix, Lms, Local, Luminance, NamedPrimaries,
-            NamedTransferFunction, Primaries, TransferFunction, TransferFunctionWithArgs,
+            ColorMatrix, Lms, Local, Luminance, NamedPrimaries, NamedTransferFunction, Primaries,
+            TransferFunction, TransferFunctionWithArgs, matrix_from_lms,
         },
         ordered_float::F64,
         protocols::{
@@ -56,8 +56,8 @@ use {
         rc::Rc,
     },
     wl_client::{
-        proxy::{self},
         Libwayland, QueueOwner,
+        proxy::{self},
     },
 };
 

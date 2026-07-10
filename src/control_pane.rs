@@ -10,12 +10,13 @@ use {
             Color, DescriptionData, TestColorDescription, TestPane, TestPrimaries, TestScene,
         },
     },
-    bytemuck::{bytes_of, NoUninit},
+    bytemuck::{NoUninit, bytes_of},
     egui::{
-        vec2, CentralPanel, Color32, ComboBox, Context, DragValue, FullOutput, Grid, Image,
-        RawInput, Slider, TextureId, Ui, ViewportBuilder, ViewportInfo, Widget, WidgetText,
+        CentralPanel, Color32, ComboBox, Context, DragValue, FullOutput, Grid, Image, RawInput,
+        Slider, TextureId, Ui, ViewportBuilder, ViewportInfo, Widget, WidgetText, vec2,
     },
     egui_wgpu::{
+        RenderState, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew,
         wgpu::{
             Backends, BlendComponent, BlendState, ColorTargetState, DeviceDescriptor, Extent3d,
             Features, FilterMode, FragmentState, IndexFormat, InstanceDescriptor, Limits, LoadOp,
@@ -26,7 +27,6 @@ use {
             TextureUsages, TextureView, TextureViewDescriptor, VertexState,
         },
         winit::Painter,
-        RenderState, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew,
     },
     egui_winit::winit::{
         event::WindowEvent,
@@ -895,11 +895,11 @@ fn draw_chromaticity_diagram(ui: &mut Ui, ds: &mut DrawState, primaries: Primari
     let available = available.x.min(available.y).round();
     let size = (ui.pixels_per_point() * available).round() as u32;
     let size = size.min(ds.max_size);
-    if let Some(cie) = &mut ds.cie_diagram {
-        if cie.size != size {
-            ds.renderer.renderer.write().free_texture(&cie.id);
-            ds.cie_diagram = None;
-        }
+    if let Some(cie) = &mut ds.cie_diagram
+        && cie.size != size
+    {
+        ds.renderer.renderer.write().free_texture(&cie.id);
+        ds.cie_diagram = None;
     }
     let cie = match &mut ds.cie_diagram {
         Some(c) => c,
@@ -1014,7 +1014,7 @@ fn draw_chromaticity_diagram(ui: &mut Ui, ds: &mut DrawState, primaries: Primari
         b: [f32; 2],
         wp: [f32; 2],
     }
-    let map = |f: (F64, F64)| [f.0 .0 as f32, f.1 .0 as f32];
+    let map = |f: (F64, F64)| [f.0.0 as f32, f.1.0 as f32];
     let data = Data {
         r: map(primaries.r),
         g: map(primaries.g),

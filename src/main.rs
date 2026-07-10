@@ -8,7 +8,7 @@ use {
         platform::pump_events::EventLoopExtPumpEvents,
         window::WindowId,
     },
-    futures_util::{select, FutureExt},
+    futures_util::{FutureExt, select},
     std::{future::pending, os::fd::AsFd, time::Duration},
 };
 

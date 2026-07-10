@@ -4,6 +4,7 @@ use {
         protocols::wayland::wl_surface::WlSurface,
     },
     ash::{
+        Device, Entry, Instance,
         ext::swapchain_maintenance1,
         khr::{surface, swapchain, wayland_surface},
         vk::{
@@ -14,31 +15,30 @@ use {
             CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
             CommandBufferUsageFlags, CommandPool, CommandPoolCreateInfo, CompositeAlphaFlagsKHR,
             DependencyInfo, DeviceCreateInfo, DeviceMemory, DeviceQueueCreateInfo, DynamicState,
-            Extent2D, Fence, FenceCreateInfo, Format, GraphicsPipelineCreateInfo, Image,
-            ImageAspectFlags, ImageLayout, ImageMemoryBarrier2, ImageSubresourceRange,
-            ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo,
-            PhysicalDevice, PhysicalDeviceSwapchainMaintenance1FeaturesEXT,
-            PhysicalDeviceVulkan12Features, PhysicalDeviceVulkan13Features, Pipeline,
-            PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState,
-            PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo,
-            PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-            PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
-            PipelineRasterizationStateCreateInfo, PipelineRenderingCreateInfo,
-            PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineStageFlags2,
-            PipelineTessellationStateCreateInfo, PipelineVertexInputStateCreateInfo,
-            PipelineViewportStateCreateInfo, PresentInfoKHR, PresentModeKHR, PrimitiveTopology,
-            PushConstantRange, Queue, Rect2D, RenderingAttachmentInfo, RenderingInfo,
-            SampleCountFlags, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo,
-            ShaderStageFlags, SharingMode, SubmitInfo, SurfaceFormatKHR, SurfaceKHR,
-            SurfaceTransformFlagsKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-            SwapchainPresentFenceInfoEXT, Viewport, WaylandSurfaceCreateInfoKHR,
             EXT_SURFACE_MAINTENANCE1_NAME, EXT_SWAPCHAIN_COLORSPACE_NAME,
-            EXT_SWAPCHAIN_MAINTENANCE1_NAME, KHR_GET_SURFACE_CAPABILITIES2_NAME, KHR_SURFACE_NAME,
-            KHR_SWAPCHAIN_NAME, KHR_WAYLAND_SURFACE_NAME,
+            EXT_SWAPCHAIN_MAINTENANCE1_NAME, Extent2D, Fence, FenceCreateInfo, Format,
+            GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageMemoryBarrier2,
+            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+            InstanceCreateInfo, KHR_GET_SURFACE_CAPABILITIES2_NAME, KHR_SURFACE_NAME,
+            KHR_SWAPCHAIN_NAME, KHR_WAYLAND_SURFACE_NAME, PhysicalDevice,
+            PhysicalDeviceSwapchainMaintenance1FeaturesEXT, PhysicalDeviceVulkan12Features,
+            PhysicalDeviceVulkan13Features, Pipeline, PipelineBindPoint, PipelineCache,
+            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateInfo,
+            PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+            PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+            PipelineRenderingCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
+            PipelineStageFlags2, PipelineTessellationStateCreateInfo,
+            PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PresentInfoKHR,
+            PresentModeKHR, PrimitiveTopology, PushConstantRange, Queue, Rect2D,
+            RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Semaphore,
+            SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags,
+            SharingMode, SubmitInfo, SurfaceFormatKHR, SurfaceKHR, SurfaceTransformFlagsKHR,
+            SwapchainCreateInfoKHR, SwapchainKHR, SwapchainPresentFenceInfoEXT, Viewport,
+            WaylandSurfaceCreateInfoKHR,
         },
-        Device, Entry, Instance,
     },
-    bytemuck::{bytes_of, NoUninit},
+    bytemuck::{NoUninit, bytes_of},
     gpu_alloc::{AllocationError, Config, GpuAllocator, MemoryBlock, Request, UsageFlags},
     gpu_alloc_ash::AshMemoryDevice,
     itertools::Itertools,
@@ -511,12 +511,11 @@ impl VulkanSurface {
         if !recreate {
             recreate = self.suboptimal.get();
         }
-        if !recreate {
-            if let Some(sc) = &*sc {
-                if sc.width != width || sc.height != height {
-                    recreate = true;
-                }
-            }
+        if !recreate
+            && let Some(sc) = &*sc
+            && (sc.width != width || sc.height != height)
+        {
+            recreate = true;
         }
         if recreate {
             let old = sc.take();
