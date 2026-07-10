@@ -52,7 +52,6 @@ use {
         cell::{Cell, RefCell},
         collections::HashSet,
         f32::consts::PI,
-        mem,
         ptr::NonNull,
         rc::Rc,
     },
@@ -813,7 +812,9 @@ impl XdgSurfaceEventHandler for Rc<State> {
 
     fn configure(&self, _data: &mut Self::Data, _slf: &XdgSurfaceRef, serial: u32) {
         self.xdg_surface.ack_configure(serial);
-        self.render_frame(&mut self.mutable.borrow_mut());
+        let m = &mut *self.mutable.borrow_mut();
+        m.need_render = true;
+        self.render_frame(m);
     }
 }
 
@@ -835,8 +836,8 @@ impl XdgToplevelEventHandler for Rc<State> {
             height = 600;
         }
         let m = &mut *self.mutable.borrow_mut();
-        m.need_render |= mem::replace(&mut m.width, width) != width;
-        m.need_render |= mem::replace(&mut m.height, height) != height;
+        m.width = width;
+        m.height = height;
     }
 
     fn close(&self, _data: &mut Self::Data, _slf: &XdgToplevelRef) {
