@@ -62,7 +62,7 @@ pub struct ControlPane {
 pub struct DrawState {
     renderer: RenderState,
     max_size: u32,
-    config: ControlPaneConfig,
+    pub config: ControlPaneConfig,
     cie_diagram: Option<CieDiagram>,
     horseshoe_pipeline: RenderPipeline,
     triangle_pipeline: RenderPipeline,
@@ -372,7 +372,7 @@ impl From<NamedTransferFunction> for WidgetText {
     }
 }
 
-struct ControlPaneConfig {
+pub struct ControlPaneConfig {
     view: View,
 
     // settings
