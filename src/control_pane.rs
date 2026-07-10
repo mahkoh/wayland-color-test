@@ -230,6 +230,7 @@ impl ControlPane {
             }
             WindowEvent::RedrawRequested => {
                 self.have_frame.set(true);
+                self.need_repaint = true;
             }
             WindowEvent::CloseRequested => {
                 std::process::exit(0);
